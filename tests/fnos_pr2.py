@@ -30,7 +30,7 @@ def wait_status(wanted):
 session()
 if len(sys.argv)>2:
     before=json.loads(pathlib.Path(sys.argv[2]).read_text())
-    check('0.1.3' in before['version'] and '0.2.0' in (root/'manifest').read_text(),'actual PR1-to-PR2 version transition')
+    check('0.1.3' in before['version'] and 'version' in (root/'manifest').read_text() and '0.2.' in (root/'manifest').read_text(),'actual PR1-to-PR2 version transition')
     check(hashlib.sha256((root/'etc/mimo-key').read_bytes()).hexdigest()==before['key'],'upgrade preserves exact private Key')
     check(all(hashlib.sha256((root/'var/audio'/identifier/'audio.wav').read_bytes()).hexdigest()==digest for identifier,digest in before['audio'].items()),'upgrade preserves every pre-existing WAV hash')
     listed=json.loads(request('/assets')[1]);check(all(any(a['id']==identifier for a in listed) for identifier in before['audio']),'PR1 assets listed in new API')

@@ -98,6 +98,8 @@ python3 tests/package.py
 
 实机验收：先安装 FPK，然后把 `tests/fnos_acceptance.py` 复制到指定 fnOS 测试机，以 root 执行。它通过真实私有 Socket 检查权限、范围请求、文件复用与 appcenter 启停，仅创建并清理有明确标签的合成静音测试文件，不调用 MiMo、不更改已有 Key。完整的浏览器登录、桌面 iframe、非管理员会话和在线合成仍应另外验证。
 
+PR2 的样本验收可将 `tests/fnos_pr2.py` 和 `tests/fixtures/tone.mp3` 复制到指定测试机，以 root 运行 `python3 /tmp/fnos_pr2.py /tmp/tone.mp3`。脚本检查上传、解析、归属和重启保留，拒绝在已有生成任务运行时开始重启测试；只清理自己创建的测试样本，不发起云端合成。原位升级的哈希比较可额外传入升级前记录的私有比较文件，其字段格式见脚本；该文件含 Key 哈希，保持 0600，验收后删除，不提交仓库。
+
 运行时使用 invariant globalization，无 ICU 依赖。Debian 12 测试机已实际启动，并核验 glibc、libstdc++、libgcc、libm、libdl、pthread；真实 HTTPS 合成验证了系统 TLS/证书环境。其他 fnOS 版本与发行版需重新验收，不把 WSL、Mock 或打包成功等同于实机安装。
 
 ## 来源与许可
