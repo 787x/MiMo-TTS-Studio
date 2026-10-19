@@ -1,0 +1,21 @@
+#!/bin/bash
+set -eu
+: "${TRIM_PKGVAR:?}"
+case "${wizard_data_action:-keep}" in
+keep) exit 0 ;;
+delete)
+    [ "$(cat "$TRIM_PKGVAR/.mimotts-owned" 2>/dev/null)" = mimotts-v1 ] || exit 1
+    # Delete only known, application-owned children. Never remove a TRIM root,
+    # follow a symlink, or touch a shared/user-selected folder.
+    data_root=$(realpath -e "$TRIM_PKGVAR")
+    for name in audio .retained-config; do
+        child="$data_root/$name"
+        [ ! -L "$child" ] || exit 1
+        if [ -d "$child" ]; then
+            [ "$(realpath -e "$child")" = "$data_root/$name" ] || exit 1
+            rm -rf -- "$child"
+        fi
+    done
+    ;;
+*) exit 1 ;;
+esac
