@@ -102,4 +102,6 @@ public static partial class Composition
         return new(user, prefix, result.ToArray());
     }
 }
-public sealed class InputError(string message) : Exception(message);
+public class InputError(string message) : Exception(message);
+public sealed class UpstreamError(int status, string message) : InputError(message) { public int Status { get; } = status; }
+public sealed class EmptyAudioError() : InputError("服务返回空音频。");

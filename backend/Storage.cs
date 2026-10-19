@@ -12,6 +12,19 @@ public sealed partial class Storage
     public string Temp { get; }
     public string Samples { get; }
     private readonly object gate = new();
+    private string ttsRevision = Guid.NewGuid().ToString("N"), llmRevision = Guid.NewGuid().ToString("N");
+    private string? observedTtsKey;
+    private (LlmSettings Settings,string? Key)? observedLlm;
+    public (string Revision, string? Key, LlmSettings Settings) DiagnosticConfig(bool llm)
+    {
+        lock(gate)
+        {
+            var saved=ReadLlm();var tts=ReadKey();
+            if(observedTtsKey!=tts){ttsRevision=Guid.NewGuid().ToString("N");observedTtsKey=tts;}
+            if(observedLlm!=saved){llmRevision=Guid.NewGuid().ToString("N");observedLlm=saved;}
+            return llm ? (saved.Settings.ReuseTtsKey ? llmRevision+ttsRevision : llmRevision, saved.Settings.ReuseTtsKey ? tts : saved.Key, saved.Settings) : (ttsRevision,tts,saved.Settings);
+        }
+    }
     private string KeyPath => Path.Combine(Config, "mimo-key");
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public const long Quota = 1024L * 1024 * 1024;
@@ -41,9 +54,10 @@ public sealed partial class Storage
     {
         lock (gate)
         {
-            if (string.IsNullOrEmpty(key)) { File.Delete(KeyPath); return; }
+            if (string.IsNullOrEmpty(key)) { File.Delete(KeyPath); ttsRevision=Guid.NewGuid().ToString("N"); return; }
             if (key.Length is < 8 or > 512 || key.Any(c => c < 33 || c > 126)) throw new InputError("API Key 必须为 8–512 个可打印 ASCII 字符，不含空白。");
             AtomicWrite(KeyPath, System.Text.Encoding.UTF8.GetBytes(key));
+            ttsRevision=Guid.NewGuid().ToString("N");
         }
     }
     public bool HasSpace(long reservation = Wave.MaxBytes)

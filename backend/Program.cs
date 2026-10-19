@@ -40,6 +40,7 @@ builder.Services.AddSingleton(storage);
 builder.Services.AddSingleton(new Mimo(new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(15) }) { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton<Jobs>();
 builder.Services.AddSingleton(new Llm(storage, new HttpClient(Llm.Handler()) { Timeout = Timeout.InfiniteTimeSpan }));
+builder.Services.AddSingleton<Diagnostics>();
 var app = builder.Build();
 string csrf = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 app.Use(async (context, next) =>
@@ -79,6 +80,9 @@ app.Use(async (context, next) =>
     await next(context);
 });
 string Owner(HttpContext c) => c.Request.Headers["X-Trim-Userid"].ToString();
+app.MapPost("/api/diagnostics/check", (DiagnosticInput input, HttpContext c, Diagnostics diagnostics) => diagnostics.Check(input,Owner(c)));
+app.MapPost("/api/diagnostics/run", (DiagnosticInput input, HttpContext c, Diagnostics diagnostics) => diagnostics.Run(input,Owner(c),c.RequestAborted));
+app.MapPost("/api/diagnostics/{id}/cancel", async (string id, HttpContext c, Diagnostics diagnostics) => Results.Ok(new { canceled=await diagnostics.CancelAndWait(id,Owner(c)) }));
 app.MapGet("/api/llm", () => storage.LlmStatus());
 app.MapPut("/api/llm", (LlmUpdate update) => { storage.SetLlm(update); return storage.LlmStatus(); });
 app.MapPost("/api/creative", (CreativeRequest request, Llm llm, HttpContext context) => llm.Generate(request, context.RequestAborted));

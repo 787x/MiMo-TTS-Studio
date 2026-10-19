@@ -73,7 +73,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
         }
         catch (OperationCanceledException)
         {
-            lock (gate) job.View = job.View with { State = job.Cancel.IsCancellationRequested ? "canceled" : "failed", Error = job.Cancel.IsCancellationRequested ? null : "任务或单段请求超时，或应用已停止。未自动重试，已发送请求仍可能计费。" };
+            lock (gate) job.View = job.View with { State = job.Cancel.IsCancellationRequested ? "canceled" : "failed", Error = job.Cancel.IsCancellationRequested ? null : "任务或单段请求超时，或应用已停止。未自动重试。" };
         }
         catch (Exception e)
         {

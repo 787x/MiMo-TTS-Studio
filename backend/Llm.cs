@@ -26,6 +26,7 @@ public sealed partial class Storage
             if(!string.IsNullOrEmpty(update.Key)) { if(update.Key.Length is <8 or >512 || update.Key.Any(c=>c<33||c>126))throw new InputError("LLM Key 必须为 8–512 个无空白 ASCII 字符。"); key=update.Key; }
             if(update.Settings.ReuseTtsKey && key!=null)throw new InputError("复用模式不接受独立 Key。");
             AtomicWrite(LlmPath,JsonSerializer.SerializeToUtf8Bytes(new LlmUpdate(update.Settings,key),Json));
+            llmRevision=Guid.NewGuid().ToString("N");
         }
     }
 }
@@ -60,25 +61,7 @@ public sealed class Llm(Storage storage, HttpClient client, TimeSpan? totalTimeo
             if(key==null)throw new InputError("请先配置 LLM Key，或明确选择官方地址复用。");
             string input=Creative.Input(r);
             if(string.IsNullOrWhiteSpace(input)||Encoding.UTF8.GetByteCount(input)>60000)throw new InputError("创作需求不能为空且最多 60000 UTF-8 字节。");
-            using var request=new HttpRequestMessage(HttpMethod.Post,settings.BaseUrl+"/chat/completions");
-            request.Options.Set(new HttpRequestOptionsKey<bool>("AllowLocal"), settings.AllowLocal);
-            request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",key);
-            request.Content=JsonContent.Create(Payload(settings,r));
-            using var headersTimeout=CancellationTokenSource.CreateLinkedTokenSource(total.Token);
-            headersTimeout.CancelAfter(idleTimeout ?? TimeSpan.FromSeconds(30));
-            using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,headersTimeout.Token);
-            if(!response.IsSuccessStatusCode)throw new InputError($"LLM 返回 HTTP {(int)response.StatusCode}，请检查认证、模型、Thinking 协议或限额；未重试。");
-            if(response.Content.Headers.ContentLength>1024*1024)throw new InputError("LLM 响应超出 1 MiB。");
-            using var stream=await response.Content.ReadAsStreamAsync(total.Token);
-            using var buffer=new MemoryStream();var chunk=new byte[4096];
-            while(true)
-            {
-                using var idle=CancellationTokenSource.CreateLinkedTokenSource(total.Token);idle.CancelAfter(idleTimeout ?? TimeSpan.FromSeconds(30));
-                int count=await stream.ReadAsync(chunk,idle.Token);if(count==0)break;
-                if(buffer.Length+count>1024*1024)throw new InputError("LLM 响应超出 1 MiB。");buffer.Write(chunk,0,count);
-            }
-            var raw=new UTF8Encoding(false,true).GetString(buffer.ToArray());
-            string text=settings.Streaming?ParseSse(raw):ParseJson(raw);
+            string text=await Send(settings,key,Payload(settings,r),total.Token);
             total.Token.ThrowIfCancellationRequested();return Creative.Validate(r,text);
         }
         catch(OperationCanceledException) { throw new InputError(cancellation.IsCancellationRequested?"AI 创作已取消，原稿未改变。":"AI 创作超时，原稿未改变；未重试。"); }
@@ -86,6 +69,39 @@ public sealed class Llm(Storage storage, HttpClient client, TimeSpan? totalTimeo
         catch(IOException) { throw new InputError("LLM 连接中断，原稿未改变；未重试。"); }
         catch(HttpRequestException) { throw new InputError("LLM 连接失败，原稿未改变；未重试。"); }
         finally { slot.Release(); }
+    }
+    // Shared production transport/parser; diagnostics supply only fixed prompts and saved snapshots.
+    public async Task<string> Diagnose(LlmSettings settings, string key, CancellationToken token)
+    {
+        ValidateSettings(settings);
+        var payload = (Dictionary<string,object>)Payload(settings,new CreativeRequest("script",new ScriptRequest("请只回答：OK")));
+        payload["messages"] = new[] { new { role="system", content="这是服务可用性检测，请返回简短的正常回答。" }, new { role="user", content="请只回答：OK" } };
+        return await Send(settings,key,payload,token);
+    }
+    private async Task<string> Send(LlmSettings settings,string key,object payload,CancellationToken token)
+    {
+        using var request=new HttpRequestMessage(HttpMethod.Post,settings.BaseUrl+"/chat/completions");
+        request.Options.Set(new HttpRequestOptionsKey<bool>("AllowLocal"), settings.AllowLocal);
+        request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",key);
+        request.Content=JsonContent.Create(payload);
+        using var headersTimeout=CancellationTokenSource.CreateLinkedTokenSource(token);
+        headersTimeout.CancelAfter(idleTimeout ?? TimeSpan.FromSeconds(30));
+        using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,headersTimeout.Token);
+        if(!response.IsSuccessStatusCode)throw new UpstreamError((int)response.StatusCode, $"LLM 返回 HTTP {(int)response.StatusCode}，请检查认证、模型、Thinking 协议或限额；未重试。");
+        if(response.Content.Headers.ContentLength>1024*1024)throw new InputError("LLM 响应超出 1 MiB。");
+        using var stream=await response.Content.ReadAsStreamAsync(token);
+        using var buffer=new MemoryStream();var chunk=new byte[4096];
+        while(true)
+        {
+            using var idle=CancellationTokenSource.CreateLinkedTokenSource(token);idle.CancelAfter(idleTimeout ?? TimeSpan.FromSeconds(30));
+            int count=await stream.ReadAsync(chunk,idle.Token);if(count==0)break;
+            if(buffer.Length+count>1024*1024)throw new InputError("LLM 响应超出 1 MiB。");buffer.Write(chunk,0,count);
+        }
+        var raw=new UTF8Encoding(false,true).GetString(buffer.ToArray());
+        string text=settings.Streaming?ParseSse(raw):ParseJson(raw);
+        token.ThrowIfCancellationRequested();
+        if(string.IsNullOrWhiteSpace(text))throw new InputError("LLM 最终回答为空。");
+        return text;
     }
     public static string ParseJson(string raw)
     {

@@ -49,6 +49,13 @@ try:
     check(request('/api/preview','POST',{'text':'你好'})[0]==403,'write without CSRF denied')
     writes={'Origin':'http://nas.test:5666','Referer':'http://nas.test:5666/app/mimotts/','X-Studio-CSRF':session['csrf']}
     check(request('/api/preview','POST',{'text':'你好'},writes)[0]==200,'gateway Origin port compatibility')
+    for path,data in [('/api/diagnostics/check',{'service':'preset'}),('/api/diagnostics/run',{'service':'preset','id':'0'*32}),('/api/diagnostics/'+'0'*32+'/cancel',None)]:
+        check(request(path,'POST',data,headers=writes,identity=False)[0]==403,'diagnostic endpoint admin protection '+path)
+        check(request(path,'POST',data,headers={**writes,'Origin':'http://evil.test'})[0]==403,'diagnostic endpoint Origin protection '+path)
+        check(request(path,'POST',data)[0]==403,'diagnostic endpoint CSRF protection '+path)
+    status,body=request('/api/diagnostics/check','POST',{'service':'preset'},writes)
+    precheck=json.loads(body);check(status==200 and not precheck['ready'] and precheck['category']=='missing_key','diagnostic precheck missing credentials is offline')
+
     check(request('/api/preview','POST',{'text':'你好'},{**writes,'Origin':'http://evil.test'})[0]==403,'cross-origin write denied')
     check(request('/api/key','PUT',{'key':'verification-dummy-key'},writes)[0]==200,'Key update')
     status,body=request();check(b'verification-dummy-key' not in body and json.loads(body)['configured'],'Key never returned')
@@ -88,6 +95,12 @@ try:
         status,result=request('/api/creative','POST',{'task':'script','draft':{'text':'Write a greeting.'}},writes)
         check(status==200 and json.loads(result)['text']=='Local compatible welcome.','actual loopback HTTP through LLM client produces validated candidate')
         check(len(upstream_calls)==1 and upstream_calls[0][0]=='/v1/chat/completions' and upstream_calls[0][1]=='Bearer dummy-local-key' and 'audio' not in upstream_calls[0][2],'custom service uses independent credential with exactly one text request')
+        status,body=request('/api/diagnostics/check','POST',{'service':'llm'},writes)
+        precheck=json.loads(body);check(status==200 and precheck['ready'] and len(upstream_calls)==1,'saved LLM probe precheck sends no HTTP')
+        status,body=request('/api/diagnostics/run','POST',{'service':'llm','revision':precheck['revision'],'id':'1'*32},writes)
+        result=json.loads(body);check(status==200 and result['state']=='succeeded' and len(upstream_calls)==2,'Release authenticated probe sends exactly one real loopback request')
+        check(b'dummy-local-key' not in body and not list((root/'var/audio').glob('*/asset.json')),'probe output hides Key and creates zero assets')
+
     finally:local.shutdown();local.server_close()
     check(request('/api/key','DELETE',headers=writes)[0]==204,'Key clear')
     check(request('/api/jobs','POST',{'text':'不会发送'},writes)[0]==400,'no Key prevents synthesis')
