@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import Diagnostics from "./Diagnostics.vue"
+import {getTheme,setTheme} from "./theme"
 import AiSettings from "./AiSettings.vue"
 import AiTool from "./AiTool.vue"
 import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue'
@@ -9,6 +11,8 @@ type SynthesisMode='preset'|'design'|'clone'
 type Asset={id:string;title:string;voice:string;created:string;saved:boolean;bytes:number;synthesisMode?:SynthesisMode;sampleEligible?:boolean;sourceSampleId?:string;parameters?:{model:string;sourceSampleName:string|null;user:string;prefix:string}}
 type Job={id:string;state:string;completed:number;total:number;assetId:string|null;error:string|null;synthesisMode:SynthesisMode}
 type Plan={user:string;prefix:string;segments:string[];assistant:string[];model:string;sourceSample:VoiceSample|null}
+const theme=ref(getTheme()),llmDirty=ref(false)
+function toggleTheme(){theme.value=theme.value==='light'?'dark':'light';theme.value=setTheme(theme.value)}
 const base='/app/mimotts/api'
 const modeLabels:Record<SynthesisMode,string>={preset:'预置音色',design:'VoiceDesign',clone:'VoiceClone'}
 const selectedMode=ref<SynthesisMode>('preset')
@@ -81,12 +85,13 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
 </script>
 
 <template>
- <header><div class="brand"><span class="mark">m<span>∿</span></span><div><strong>MiMo TTS Studio</strong><small>语音创作工作台</small></div></div><button class="quiet" @click="showSettings=!showSettings">● <span :class="configured?'ready':'muted'">{{configured?'Key 已配置':'配置 API Key'}}</span> ⚙</button></header>
+ <header><div class="brand"><span class="mark">m<span>∿</span></span><div><strong>MiMo TTS Studio</strong><small>语音创作工作台</small></div></div><div><button class="quiet" aria-label="切换浅色或深色主题" @click="toggleTheme">{{theme==='light'?'深色':'浅色'}}</button><button class="quiet" @click="showSettings=!showSettings">● <span :class="configured?'ready':'muted'">{{configured?'Key 已配置':'配置 API Key'}}</span> ⚙</button></div></header>
  <main>
   <section class="intro"><div><span class="eyebrow">VOICE WORKSPACE / 02</span><h1>让文字，拥有表达。</h1><p>从一句问候到一段故事，编排属于你的声音。</p></div><span class="badge">{{modeLabels[selectedMode]}} · MiMo V2.5</span></section>
   <div v-if="error" class="alert" role="alert">{{error}}</div><div v-if="notice" class="notice" role="status">{{notice}}</div>
   <section v-if="showSettings" class="settings card"><div><div class="settings-title"><h2>服务端 API Key</h2><a class="button quiet" href="https://platform.xiaomimimo.com/console/api-keys" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">获取 / 管理 API Key ↗</a></div><p>Key 保存在 NAS 应用私有目录，仅显示配置状态。文件权限保护，不是加密。</p></div><form @submit.prevent="configure()"><input type="password" v-model="key" autocomplete="new-password" placeholder="输入新的 MiMo API Key" maxlength="512" aria-label="MiMo API Key"><button :disabled="!key||working">更新 Key</button><button type="button" class="quiet danger" :disabled="!configured||working" @click="configure(true)">清除</button></form></section>
-  <AiSettings v-if="showSettings" :api="api"/>
+  <AiSettings v-if="showSettings" :api="api" @dirty="llmDirty=$event"/>
+  <Diagnostics v-if="showSettings" :api="api" :samples="samples" :tts-dirty="!!key||working" :llm-dirty="llmDirty"/>
   <div v-if="loading" class="card">正在连接创作工作台…</div>
   <div v-else class="workspace">
    <section class="card compose">

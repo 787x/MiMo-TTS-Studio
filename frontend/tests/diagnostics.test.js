@@ -1,0 +1,20 @@
+import {mount,flushPromises} from '@vue/test-utils'
+import {describe,it,expect,vi,afterEach} from 'vitest'
+import Diagnostics from '../src/Diagnostics.vue'
+import {getTheme,setTheme} from '../src/theme'
+const wrappers=[]
+afterEach(()=>{wrappers.forEach(w=>w.unmount());wrappers.length=0;vi.useRealTimers()})
+async function setup(){let resolveRun;const check={ready:true,revision:'v1',reason:'配置就绪',target:'saved model'};const api=vi.fn((path)=>path==='/diagnostics/check'?Promise.resolve({...check}):path.endsWith('/cancel')?Promise.resolve({canceled:true}):new Promise(r=>resolveRun=r));const w=mount(Diagnostics,{props:{api,samples:[],ttsDirty:false,llmDirty:false}});wrappers.push(w);w.find('details').element.open=true;await w.find('details').trigger('toggle');await flushPromises();return {w,api,check,resolve:result=>resolveRun(result)}}
+const success={state:'succeeded',elapsedMs:12,testedAt:'2026-10-19T12:00:00Z',category:'success',reason:'真实检测完成'}
+describe('diagnostics',()=>{
+ it('only performs local prechecks when opened',async()=>{const {w,api}=await setup();expect(api.mock.calls.every(c=>c[0]==='/diagnostics/check')).toBe(true);expect(w.text()).toContain('配置就绪');expect(w.text()).not.toContain('真实检测完成')})
+ it('requires explicit clone selection and never changes workstation samples',async()=>{const {w,api}=await setup();expect(w.find('select').element.value).toBe('');expect(api.mock.calls.filter(c=>c[1]==='POST').every(c=>!c[2].sampleId)).toBe(true)})
+ it('blocks unsaved settings',async()=>{const {w,api}=await setup();await w.setProps({llmDirty:true,ttsDirty:true});expect(w.findAll('button').every(b=>b.attributes('disabled')!==undefined)).toBe(true);expect(w.text()).toContain('请先保存');expect(api.mock.calls.some(c=>c[0]==='/diagnostics/run')).toBe(false)})
+ it('displays a complete result only after an explicit request',async()=>{const {w,resolve}=await setup();await w.find('button').trigger('click');await flushPromises();resolve(success);await flushPromises();expect(w.text()).toContain('真实检测完成');expect(w.text()).toContain('12 ms')})
+ for(const action of ['cancel','edit','close','sample','unmount'])it('discards late success after '+action,async()=>{const {w,api,resolve}=await setup();await w.findAll('button')[action==='sample'?2:0].trigger('click');await flushPromises();if(action==='cancel')await w.findAll('button').find(b=>b.text()==='取消检测').trigger('click');if(action==='edit')await w.setProps({ttsDirty:true});if(action==='close'){w.find('details').element.open=false;await w.find('details').trigger('toggle')}if(action==='sample')await w.find('select').setValue('');if(action==='unmount')w.unmount();if(action==='sample')await w.setProps({samples:[{id:'different',name:'new',format:'wav',durationSeconds:1}]});await flushPromises();resolve(success);await flushPromises();if(action!=='unmount')expect(w.text()).not.toContain('真实检测完成');expect(api.mock.calls.some(c=>c[0].endsWith('/cancel'))).toBe(true)})
+ it('expires remote configuration changes without starting online requests',async()=>{vi.useFakeTimers();const {w,api,check,resolve}=await setup();await w.find('button').trigger('click');await flushPromises();resolve(success);await flushPromises();check.revision='v2';await vi.advanceTimersByTimeAsync(2100);await flushPromises();expect(w.text()).toContain('过期');expect(w.text()).not.toContain('真实检测完成');expect(api.mock.calls.filter(c=>c[0]==='/diagnostics/run')).toHaveLength(1)})
+})
+describe('theme',()=>{
+ it('defaults to light, persists only theme, and restores dark',()=>{localStorage.clear();expect(getTheme()).toBe('light');setTheme('dark');expect(document.documentElement.dataset.theme).toBe('dark');expect(getTheme()).toBe('dark');expect(Object.keys(localStorage)).toEqual(['mimo-theme'])})
+ it('falls back to light when browser storage is unavailable',()=>{vi.stubGlobal('localStorage',{getItem(){throw Error('denied')},setItem(){throw Error('denied')}});setTheme('dark');expect(document.documentElement.dataset.theme).toBe('light');expect(getTheme()).toBe('light');vi.unstubAllGlobals()})
+})

@@ -35,6 +35,16 @@ bash scripts/build.sh
 
 可用预置 Voice ID：`mimo_default`、`冰糖`、`茉莉`、`苏打`、`白桦`、`Mia`、`Chloe`、`Milo`、`Dean`。默认音色随 MiMo 集群变化。自然语言与导演内容进入可选 `user` 消息，正文及标签进入 `assistant`；请求为官方 `/v1/chat/completions` 的非流式 WAV 协议。整体标签按每段重复前缀，唱歌显式添加 `(唱歌)`。这些都在请求预览显示；不暗中添加语速或改写正文。参考 [MiMo 官方接口文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)。
 
+## 服务检测与主题（0.4.1）
+
+右上角设置中的「服务检测 · MiMo / LLM」分别展示预置音色、VoiceDesign、VoiceClone 和 LLM。打开面板只进行本机配置预检查；「配置就绪」不代表服务可用。点击对应的「真实检测（可能收费）」才向该服务发送一次固定短文本，不读取工作台稿件，不重试或更换服务。
+
+预置检测固定使用「冰糖」；VoiceDesign 使用固定短音色描述。VoiceClone 默认不选择样本，只有明确选择自己的已有样本并点击检测才上传该参考音频。三种模型复用生产请求与完整 WAV/PCM 校验，校验结果仅在内存使用，不生成任务、音频资产或新样本。LLM 复用已保存的地址、模型、Key、Thinking 和 Streaming，严格验证正常结束的非空最终回答；推理、部分 SSE、缺少 `[DONE]` 或截断不算成功。
+
+检测全应用最多一项，不排队，独立取消和 90 秒总预算；取消按钮等待服务端执行结束确认。已有 TTS / AI 任务使用原有独立状态，不会被检测取消。已发出的请求仍可能计费。配置、凭据或样本变化会使旧结果过期，未保存的相关设置会阻止检测。面板打开时每 2 秒只比较本机配置快照，不发起云端探测；关闭面板或页面请求取消，迟到响应会被丢弃。结果不持久化，成功仅代表这一次请求。
+
+导航栏的「深色 / 浅色」即时切换配色，保持现有布局、字体和尺寸。默认浅色，偏好只存放在本浏览器的 `mimo-theme` 项中；刷新和重新打开 iframe 后保持。存储不可用时回退浅色，不影响创作。不会在浏览器持久保存凭据或编辑内容。构建、实机及真实云端证据见 [PR4 验证记录](verification/PR4.md)。
+
 ## VoiceDesign、VoiceClone 与声音样本
 
 三种创作模式保留各自的当前编辑内容。结果展示真实生成模式和生成时参数；切换模式不会把其他模式迟到的结果标成当前模式的结果。刷新后可从音频库重新打开结果，编辑草稿不持久保存。
@@ -109,6 +119,8 @@ dotnet run --project tests/Studio.Tests.csproj -c Release
 python3 tests/lifecycle.py
 sudo python3 tests/production_gateway.py artifacts/fpk/app/server/MiMoStudio
 node --test frontend/tests/polling.test.mjs
+python3 tests/theme_styles.py
+npm --prefix frontend exec -- vitest run --root frontend --environment happy-dom tests/creative.test.js tests/diagnostics.test.js
 python3 tests/package.py
 ```
 
