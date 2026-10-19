@@ -58,7 +58,11 @@ app.Use(async (context, next) =>
     {
         if (!Gateway.SafeOrigin(context.Request) || context.Request.Headers["X-Studio-CSRF"] != csrf)
         { context.Response.StatusCode = 403; await context.Response.WriteAsJsonAsync(new { error = "来源或 CSRF 校验失败，请从 fnOS 桌面重新打开应用。" }); return; }
-        if (context.Request.ContentLength > 128 * 1024) { context.Response.StatusCode = 413; return; }
+        bool sampleUpload = HttpMethods.IsPost(context.Request.Method) && context.Request.Path == prefix + "/api/samples/upload";
+        long limit = sampleUpload ? SampleAudio.MaxBytes : 128 * 1024;
+        if (sampleUpload && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } feature)
+            feature.MaxRequestBodySize = limit;
+        if (context.Request.ContentLength > limit) { context.Response.StatusCode = 413; return; }
     }
     try { await next(context); }
     catch (InputError e) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = e.Message }); }
@@ -77,7 +81,12 @@ string Owner(HttpContext c) => c.Request.Headers["X-Trim-Userid"].ToString();
 app.MapGet("/api/session", () => new { configured = storage.ReadKey() != null, csrf, voices = Composition.Voices, development });
 app.MapPut("/api/key", (KeyInput input) => { storage.SetKey(input.Key); return Results.Ok(new { configured = storage.ReadKey() != null }); });
 app.MapDelete("/api/key", () => { storage.SetKey(null); return Results.NoContent(); });
-app.MapPost("/api/preview", (ScriptRequest request) => Composition.Plan(request));
+app.MapPost("/api/preview", (HttpContext c, ScriptRequest request) =>
+{
+    var plan = Composition.Plan(request);
+    var sample = request.SynthesisMode == "clone" ? storage.GetSample(request.SourceSampleId!, Owner(c)) ?? throw new InputError("参考样本不存在或无权使用。") : null;
+    return new { plan.User, plan.Prefix, plan.Segments, plan.Assistant, request.SynthesisMode, model = Composition.Model(request.SynthesisMode), sourceSample = sample };
+});
 app.MapPost("/api/jobs", (HttpContext c, ScriptRequest request, Jobs jobs) => Results.Json(jobs.Start(Owner(c), request), statusCode: 202));
 app.MapGet("/api/jobs", (HttpContext c, Jobs jobs) => jobs.List(Owner(c)));
 app.MapGet("/api/jobs/{id}", (HttpContext c, string id, Jobs jobs) => jobs.Get(id, Owner(c)) is { } job ? Results.Ok(job) : Results.NotFound());
@@ -87,6 +96,14 @@ app.MapGet("/api/assets/{id}/audio", (HttpContext c, string id) => storage.Open(
     Results.Stream(file, "audio/wav", c.Request.Query.ContainsKey("download") ? $"mimo-{id}.wav" : null, enableRangeProcessing: true) : Results.NotFound());
 app.MapPost("/api/assets/{id}/save", (HttpContext c, string id) => storage.Save(id, Owner(c)) is { } asset ? Results.Ok(asset) : Results.NotFound());
 app.MapDelete("/api/assets/{id}", (HttpContext c, string id) => storage.Delete(id, Owner(c)) ? Results.NoContent() : Results.NotFound());
+var transfers = new SampleTransfers(storage);
+app.MapGet("/api/samples", (HttpContext c) => storage.ListSamples(Owner(c)));
+app.MapPost("/api/samples/upload", (Func<HttpContext, Task<IResult>>)(c => transfers.Upload(c, Owner(c))));
+app.MapGet("/api/samples/{id}/audio", (HttpContext c, string id) => storage.OpenSample(id, Owner(c)) is { } sample ?
+    Results.Stream(sample.File, sample.Mime, c.Request.Query.ContainsKey("download") ? $"sample-{id}.{(sample.Mime == "audio/wav" ? "wav" : "mp3")}" : null, enableRangeProcessing: true) : Results.NotFound());
+app.MapPut("/api/samples/{id}", (HttpContext c, string id, SampleNameInput input) => storage.RenameSample(id, Owner(c), input.Name) is { } sample ? Results.Ok(sample) : Results.NotFound());
+app.MapDelete("/api/samples/{id}", (HttpContext c, string id) => storage.DeleteSample(id, Owner(c)) ? Results.NoContent() : Results.NotFound());
+app.MapPost("/api/assets/{id}/sample", (HttpContext c, string id, SampleNameInput input) => transfers.FromAsset(c, id, Owner(c), input.Name));
 app.UseDefaultFiles(); app.UseStaticFiles();
 app.Lifetime.ApplicationStarted.Register(() =>
 {
@@ -95,3 +112,4 @@ app.Lifetime.ApplicationStarted.Register(() =>
 app.Lifetime.ApplicationStopped.Register(() => { if (socket != null) File.Delete(socket); instance?.Dispose(); });
 await app.RunAsync();
 public sealed record KeyInput(string? Key);
+public sealed record SampleNameInput(string Name);

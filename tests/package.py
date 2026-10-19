@@ -20,9 +20,11 @@ with tarfile.open(path,'r:gz') as outer:
         assert read('server/MiMoStudio')[:4]==b'\x7fELF'
         assert members['server/MiMoStudio'].mode&0o111
         assert 'server/libcoreclr.so' in members and 'server/wwwroot/index.html' in members
+        assert 'server/NLayer.dll' in members
+        assert any('NLayer' in n and n.endswith('NLayer.LICENSE') for n in members)
         assert any('microsoft.netcore.app.runtime.linux-x64' in n and 'LICENSE' in n for n in members)
         assert any('microsoft.aspnetcore.app.runtime.linux-x64' in n and 'LICENSE' in n for n in members)
-        assert all('node_modules/' not in n and 'SeleVox' not in n and not n.endswith(('mimo-key','.partial','.pdb')) for n in members)
+        assert all('node_modules/' not in n and '/.dev/' not in n and 'SeleVox' not in n and not n.endswith(('mimo-key','sample.json','.partial','.pdb')) for n in members)
         deps=read('server/MiMoStudio.deps.json')
         assert b'linux-x64' in deps and b'WindowsDesktop' not in deps
 print('PASS FPK metadata, scripts, gateway, non-root privilege, ELF/runtime, UI, notices, independence and clean payload')

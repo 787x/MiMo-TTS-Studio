@@ -6,20 +6,30 @@ namespace Studio;
 public sealed class Mimo(HttpClient http)
 {
     public const string Endpoint = "https://api.xiaomimimo.com/v1/chat/completions";
-    public static object Payload(ScriptRequest input, ScriptPlan plan, string segment)
+    public static object Payload(ScriptRequest input, ScriptPlan plan, string segment, string? sampleDataUrl = null)
     {
         var messages = new List<object>();
         if (plan.User.Length > 0) messages.Add(new { role = "user", content = plan.User });
         messages.Add(new { role = "assistant", content = plan.Prefix + segment });
-        return new { model = "mimo-v2.5-tts", stream = false, messages, audio = new { format = "wav", voice = input.Voice } };
+        var audio = new Dictionary<string, object> { ["format"] = "wav" };
+        if (input.SynthesisMode == "preset") audio["voice"] = input.Voice;
+        else if (input.SynthesisMode == "design") audio["optimize_text_preview"] = false;
+        else if (input.SynthesisMode == "clone")
+        {
+            if (sampleDataUrl == null || !(sampleDataUrl.StartsWith("data:audio/wav;base64,", StringComparison.Ordinal) || sampleDataUrl.StartsWith("data:audio/mpeg;base64,", StringComparison.Ordinal)) ||
+                sampleDataUrl.Length > SampleAudio.MaxTransportBytes) throw new InputError("参考音频快照无效或过大。");
+            audio["voice"] = sampleDataUrl;
+        }
+        else throw new InputError("无效的合成模式。");
+        return new { model = Composition.Model(input.SynthesisMode), stream = false, messages, audio };
     }
-    public async Task<Pcm> Generate(string key, ScriptRequest input, ScriptPlan plan, string segment, CancellationToken ct)
+    public async Task<Pcm> Generate(string key, ScriptRequest input, ScriptPlan plan, string segment, CancellationToken ct, string? sampleDataUrl = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        request.Content = JsonContent.Create(Payload(input, plan, segment));
+        request.Content = JsonContent.Create(Payload(input, plan, segment, sampleDataUrl));
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         if (!response.IsSuccessStatusCode) throw new InputError($"MiMo 请求失败（HTTP {(int)response.StatusCode}），请检查 Key、余额或稍后重试。未自动重试。");
         const int maxResponse = 90 * 1024 * 1024;

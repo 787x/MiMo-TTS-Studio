@@ -2,12 +2,15 @@ using System.Text.Json;
 
 namespace Studio;
 
-public sealed record Asset(string Id, string Owner, string Title, string Voice, DateTimeOffset Created, bool Saved, long Bytes);
-public sealed class Storage
+public sealed record Asset(string Id, string Owner, string Title, string Voice, DateTimeOffset Created, bool Saved, long Bytes,
+    string SynthesisMode = "preset", string? SourceSampleId = null, double? DurationSeconds = null,
+    bool SampleEligible = false, GenerationSummary? Parameters = null);
+public sealed partial class Storage
 {
     public string Config { get; }
     public string Data { get; }
     public string Temp { get; }
+    public string Samples { get; }
     private readonly object gate = new();
     private string KeyPath => Path.Combine(Config, "mimo-key");
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -15,12 +18,14 @@ public sealed class Storage
     public Storage(string config, string data, string temp)
     {
         Config = config; Data = data; Temp = temp;
-        foreach (var path in new[] { Config, Data, Temp }) PrivateDirectory(path);
+        Samples = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(data))!, "samples");
+        foreach (var path in new[] { Config, Data, Temp, Samples }) PrivateDirectory(path);
         // fnOS reapplies package ACLs during reinstall (observed mode 0700 on
         // retained files). Reassert the credential's exact mode before reading it.
         if (OperatingSystem.IsLinux() && File.Exists(KeyPath))
             File.SetUnixFileMode(KeyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         foreach (var dir in Directory.GetDirectories(Data, ".stage-*")) Directory.Delete(dir, true);
+        foreach (var dir in Directory.GetDirectories(Samples, ".stage-*")) Directory.Delete(dir, true);
         foreach (var file in Directory.GetFiles(Temp, "*.partial")) File.Delete(file);
         foreach (var asset in ListAll().Where(a => !a.Saved && a.Created < DateTimeOffset.UtcNow.AddHours(-24)))
             Directory.Delete(Path.Combine(Data, asset.Id), true);
@@ -41,16 +46,17 @@ public sealed class Storage
             AtomicWrite(KeyPath, System.Text.Encoding.UTF8.GetBytes(key));
         }
     }
-    public bool HasSpace()
+    public bool HasSpace(long reservation = Wave.MaxBytes)
     {
         lock (gate)
         {
-            long used = Directory.EnumerateFiles(Data, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
+            long used = new[] { Data, Samples }.Sum(path => Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length));
             var drive = new DriveInfo(Path.GetFullPath(Data));
-            return ListAll().Take(1000).Count() < 1000 && used < Quota - Wave.MaxBytes && drive.AvailableFreeSpace > 256L * 1024 * 1024;
+            int count = new[] { Data, Samples }.Sum(path => Directory.GetDirectories(path).Count(d => ValidId(Path.GetFileName(d))));
+            return count < 1000 && used + reservation + 16384 < Quota && drive.AvailableFreeSpace > 256L * 1024 * 1024 + reservation;
         }
     }
-    public Asset Commit(string owner, ScriptRequest input, byte[] bytes)
+    public Asset Commit(string owner, ScriptRequest input, byte[] bytes, GenerationSummary? parameters = null)
     {
         lock (gate)
         {
@@ -58,7 +64,11 @@ public sealed class Storage
             string id = Guid.NewGuid().ToString("N"), stage = Path.Combine(Data, ".stage-" + id);
             PrivateDirectory(stage);
             var title = new string(input.Text.Take(60).Select(c => char.IsControl(c) ? ' ' : c).ToArray());
-            var asset = new Asset(id, owner, title, input.Voice, DateTimeOffset.UtcNow, false, bytes.Length);
+            var pcm = Wave.Decode(bytes);
+            double seconds = pcm.Data.Length / (pcm.Rate * 2.0);
+            var asset = new Asset(id, owner, title, input.SynthesisMode == "preset" ? input.Voice : input.SynthesisMode == "design" ? "VoiceDesign" : "VoiceClone",
+                DateTimeOffset.UtcNow, false, bytes.Length, input.SynthesisMode, input.SourceSampleId, seconds,
+                input.SynthesisMode == "design" && SampleAudio.Eligible(bytes.Length, seconds, "wav"), parameters);
             try
             {
                 AtomicWrite(Path.Combine(stage, "audio.wav"), bytes);

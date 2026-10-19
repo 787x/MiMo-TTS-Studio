@@ -10,10 +10,11 @@ with tempfile.TemporaryDirectory(prefix='mimotts-hooks-') as temporary:
     assert hook('install_callback').returncode==0
     key=root/'etc/mimo-key';key.write_text('test-only-key');key.chmod(0o600)
     audio=root/'var/audio';audio.mkdir();(audio/'test.wav').write_bytes(b'fixture')
+    samples=root/'var/samples';samples.mkdir();(samples/'test.mp3').write_bytes(b'private-sample')
     assert hook('upgrade_callback').returncode==0 and key.read_text()=='test-only-key'
     print('PASS upgrade retains configuration and assets')
     assert hook('uninstall_init').returncode==0
-    assert hook('uninstall_callback').returncode==0 and audio.exists()
+    assert hook('uninstall_callback').returncode==0 and audio.exists() and samples.exists()
     key.unlink() # Simulate fnOS removing etc on uninstall.
     assert hook('install_callback').returncode==0 and key.read_text()=='test-only-key'
     assert key.stat().st_mode & 0o777==0o600
@@ -21,11 +22,14 @@ with tempfile.TemporaryDirectory(prefix='mimotts-hooks-') as temporary:
     outside=root/'unrelated';outside.mkdir();(outside/'keep.txt').write_text('user-data')
     assert hook('uninstall_init').returncode==0
     assert hook('uninstall_callback',wizard_data_action='delete').returncode==0
-    assert not audio.exists() and not (root/'var/.retained-config').exists() and (outside/'keep.txt').exists()
+    assert not audio.exists() and not samples.exists() and not (root/'var/.retained-config').exists() and (outside/'keep.txt').exists()
     print('PASS confirmed deletion only removes owned children')
     audio.symlink_to(outside,target_is_directory=True)
     assert hook('uninstall_callback',wizard_data_action='delete').returncode!=0 and (outside/'keep.txt').exists()
     print('PASS symlink escape refused')
+    audio.unlink();samples.symlink_to(outside,target_is_directory=True)
+    assert hook('uninstall_callback',wizard_data_action='delete').returncode!=0 and (outside/'keep.txt').exists()
+    print('PASS sample directory symlink escape refused')
     assert hook('uninstall_callback',wizard_data_action='invalid').returncode!=0
     print('PASS invalid uninstall choice refused')
-print('5 lifecycle checks passed')
+print('6 lifecycle checks passed')
