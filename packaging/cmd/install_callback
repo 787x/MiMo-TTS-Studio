@@ -1,0 +1,16 @@
+#!/bin/bash
+set -eu
+umask 077
+mkdir -p "${TRIM_PKGETC:?}" "${TRIM_PKGVAR:?}"
+chmod 700 "$TRIM_PKGETC" "$TRIM_PKGVAR"
+# Preserve existing credentials and assets on reinstall/upgrade.
+if [ ! -f "$TRIM_PKGETC/.mimotts-owned" ]; then printf 'mimotts-v1\n' > "$TRIM_PKGETC/.mimotts-owned"; fi
+if [ ! -f "$TRIM_PKGVAR/.mimotts-owned" ]; then printf 'mimotts-v1\n' > "$TRIM_PKGVAR/.mimotts-owned"; fi
+# fnOS removes etc on uninstall, while var survives. Restore only our explicitly
+# retained configuration after a keep-data reinstall, never overwrite a new Key.
+retained="$TRIM_PKGVAR/.retained-config"
+if [ -f "$retained/mimo-key" ] && [ ! -L "$retained" ] && [ ! -L "$retained/mimo-key" ] && [ ! -e "$TRIM_PKGETC/mimo-key" ]; then
+    install -m 600 "$retained/mimo-key" "$TRIM_PKGETC/mimo-key"
+    rm -f "$retained/mimo-key"
+    rmdir "$retained" 2>/dev/null || true
+fi
