@@ -2,7 +2,7 @@
 Usage: sudo python3 tests/production_gateway.py artifacts/fpk/app/server/MiMoStudio
 No MiMo calls are made. Identity headers are injected only by the root test client.
 """
-import http.client, io, json, os, pathlib, pwd, shutil, socket, subprocess, sys, tempfile, time, wave
+import http.client, http.server, threading, io, json, os, pathlib, pwd, shutil, socket, subprocess, sys, tempfile, time, wave
 
 assert sys.platform == 'linux' and os.getuid() == 0, 'run as Linux root for gateway peer simulation'
 exe=pathlib.Path(sys.argv[1]).resolve()
@@ -54,6 +54,41 @@ try:
     status,body=request();check(b'verification-dummy-key' not in body and json.loads(body)['configured'],'Key never returned')
     check((root/'etc/mimo-key').stat().st_mode & 0o777==0o600,'Key file private')
     check(request('/api/assets/../../etc/mimo-key/audio')[0]==404,'traversal denied')
+    check(request('/api/llm',identity=False)[0]==403,'LLM settings require admin')
+    check(request('/api/creative','POST',{'task':'script','draft':{'text':'request'}},headers=writes,identity=False)[0]==403,'AI requests require admin')
+    settings={'baseUrl':'https://api.xiaomimimo.com/v1','model':'mimo-v2.6-flash','thinking':'mimo-disabled'}
+    check(request('/api/llm','PUT',{'settings':settings,'key':'dummy-llm-private'},writes)[0]==200,'LLM configuration update')
+    check(b'dummy-llm-private' not in request('/api/llm')[1],'LLM status hides credential')
+    check((root/'etc/llm-private').stat().st_mode & 0o777==0o600,'LLM private file mode')
+    check(request('/api/llm','PUT',{'settings':settings,'clearKey':True},writes)[0]==200,'LLM independent Key clear')
+    check(request('/api/creative','POST',{'task':'script','draft':{'text':'request'}},writes)[0]==400,'no LLM Key prevents upstream request')
+    check(request('/api/llm','PUT',{'settings':settings},headers={**writes,'Origin':'http://evil.test'})[0]==403,'LLM configuration Origin protected')
+    upstream_calls=[]
+    class CreativeUpstream(http.server.BaseHTTPRequestHandler):
+        def log_message(self,*args):pass
+        def do_POST(self):
+            if self.headers.get('Content-Length'):
+                raw=self.rfile.read(int(self.headers['Content-Length']))
+            else:
+                raw=b''
+                while True:
+                    length=int(self.rfile.readline().strip().split(b';')[0],16)
+                    if not length:self.rfile.readline();break
+                    raw+=self.rfile.read(length);assert self.rfile.read(2)==b'\r\n'
+            data=json.loads(raw)
+            upstream_calls.append((self.path,self.headers.get('Authorization'),data))
+            content=json.dumps({'choices':[{'finish_reason':'stop','message':{'content':'Local compatible welcome.'}}]}).encode()
+            self.send_response(200);self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content)
+    local=http.server.HTTPServer(('127.0.0.1',0),CreativeUpstream)
+    threading.Thread(target=local.serve_forever,daemon=True).start()
+    try:
+        custom={**settings,'baseUrl':'http://127.0.0.1:'+str(local.server_port)+'/v1','allowLocal':True}
+        check(request('/api/llm','PUT',{'settings':{**custom,'allowLocal':False},'key':'dummy-local-key'},writes)[0]==400,'HTTP requires explicit administrator opt-in')
+        check(request('/api/llm','PUT',{'settings':custom,'key':'dummy-local-key'},writes)[0]==200,'explicit local compatible service accepted')
+        status,result=request('/api/creative','POST',{'task':'script','draft':{'text':'Write a greeting.'}},writes)
+        check(status==200 and json.loads(result)['text']=='Local compatible welcome.','actual loopback HTTP through LLM client produces validated candidate')
+        check(len(upstream_calls)==1 and upstream_calls[0][0]=='/v1/chat/completions' and upstream_calls[0][1]=='Bearer dummy-local-key' and 'audio' not in upstream_calls[0][2],'custom service uses independent credential with exactly one text request')
+    finally:local.shutdown();local.server_close()
     check(request('/api/key','DELETE',headers=writes)[0]==204,'Key clear')
     check(request('/api/jobs','POST',{'text':'不会发送'},writes)[0]==400,'no Key prevents synthesis')
     check(request('/api/preview','POST',{'text':'x'*140000},writes)[0] in (400,413),'request body bound')

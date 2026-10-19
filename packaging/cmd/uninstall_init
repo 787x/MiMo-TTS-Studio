@@ -4,10 +4,17 @@ umask 077
 : "${TRIM_PKGETC:?}" "${TRIM_PKGVAR:?}"
 # The default is retention. Keep a private configuration backup in the platform's
 # persistent var directory before fnOS removes etc. No key is printed.
-if [ "${wizard_data_action:-keep}" = keep ] && [ -f "$TRIM_PKGETC/mimo-key" ]; then
+if [ "${wizard_data_action:-keep}" = keep ]; then
     [ "$(cat "$TRIM_PKGVAR/.mimotts-owned" 2>/dev/null)" = mimotts-v1 ] || exit 1
     [ ! -L "$TRIM_PKGVAR/.retained-config" ] || exit 1
     mkdir -p "$TRIM_PKGVAR/.retained-config"
     chmod 700 "$TRIM_PKGVAR/.retained-config"
-    install -m 600 "$TRIM_PKGETC/mimo-key" "$TRIM_PKGVAR/.retained-config/mimo-key"
+    for name in mimo-key llm-private; do
+        [ ! -L "$TRIM_PKGETC/$name" ] || exit 1
+        if [ -f "$TRIM_PKGETC/$name" ]; then
+            install -m 600 "$TRIM_PKGETC/$name" "$TRIM_PKGVAR/.retained-config/$name"
+        else
+            rm -f "$TRIM_PKGVAR/.retained-config/$name"
+        fi
+    done
 fi

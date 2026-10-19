@@ -39,6 +39,7 @@ builder.WebHost.ConfigureKestrel(server =>
 builder.Services.AddSingleton(storage);
 builder.Services.AddSingleton(new Mimo(new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(15) }) { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton<Jobs>();
+builder.Services.AddSingleton(new Llm(storage, new HttpClient(Llm.Handler()) { Timeout = Timeout.InfiniteTimeSpan }));
 var app = builder.Build();
 string csrf = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 app.Use(async (context, next) =>
@@ -78,6 +79,9 @@ app.Use(async (context, next) =>
     await next(context);
 });
 string Owner(HttpContext c) => c.Request.Headers["X-Trim-Userid"].ToString();
+app.MapGet("/api/llm", () => storage.LlmStatus());
+app.MapPut("/api/llm", (LlmUpdate update) => { storage.SetLlm(update); return storage.LlmStatus(); });
+app.MapPost("/api/creative", (CreativeRequest request, Llm llm, HttpContext context) => llm.Generate(request, context.RequestAborted));
 app.MapGet("/api/session", () => new { configured = storage.ReadKey() != null, csrf, voices = Composition.Voices, development });
 app.MapPut("/api/key", (KeyInput input) => { storage.SetKey(input.Key); return Results.Ok(new { configured = storage.ReadKey() != null }); });
 app.MapDelete("/api/key", () => { storage.SetKey(null); return Results.NoContent(); });

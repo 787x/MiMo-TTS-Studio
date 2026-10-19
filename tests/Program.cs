@@ -97,6 +97,7 @@ ctx.Request.Headers.Origin="http://evil.test";Check(!Gateway.SafeOrigin(ctx.Requ
 ctx.Request.Headers.Origin="null";Check(!Gateway.SafeOrigin(ctx.Request),"opaque origin rejected");
 ctx.Request.Headers.Origin="http://nas.test:1234";Check(!Gateway.SafeOrigin(ctx.Request),"mismatched referer port rejected");
 await Pr2Tests.Run(Check, Reject);
+await Pr3Tests.Run(Check, Reject);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler

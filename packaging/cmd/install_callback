@@ -9,8 +9,10 @@ if [ ! -f "$TRIM_PKGVAR/.mimotts-owned" ]; then printf 'mimotts-v1\n' > "$TRIM_P
 # fnOS removes etc on uninstall, while var survives. Restore only our explicitly
 # retained configuration after a keep-data reinstall, never overwrite a new Key.
 retained="$TRIM_PKGVAR/.retained-config"
-if [ -f "$retained/mimo-key" ] && [ ! -L "$retained" ] && [ ! -L "$retained/mimo-key" ] && [ ! -e "$TRIM_PKGETC/mimo-key" ]; then
-    install -m 600 "$retained/mimo-key" "$TRIM_PKGETC/mimo-key"
-    rm -f "$retained/mimo-key"
-    rmdir "$retained" 2>/dev/null || true
-fi
+for name in mimo-key llm-private; do
+    if [ -f "$retained/$name" ] && [ ! -L "$retained" ] && [ ! -L "$retained/$name" ] && [ ! -e "$TRIM_PKGETC/$name" ]; then
+        install -m 600 "$retained/$name" "$TRIM_PKGETC/$name"
+        rm -f "$retained/$name"
+    fi
+done
+rmdir "$retained" 2>/dev/null || true

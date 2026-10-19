@@ -53,6 +53,22 @@ Design → Clone：填写音色描述和试音正文 → 生成并试听 → 在
 
 参考音频上限为 **7,400,000 原始字节、0.2–120 秒**，编码后连同 Data URL 前缀严格小于官方 10 MB 限制。时长是本应用资源保护范围，不是 MiMo 官方强制时长；官方支持数秒短样本。WAV 使用现有完整 RIFF/PCM 校验；MP3 检查完整连续 MPEG Layer III 帧、CRC（若存在），并用 NLayer 3.0.0 逐帧解码，拒绝截断、坏帧、异常采样、格式伪装或中途改变采样率/声道。支持 MPEG 1/2/2.5、CBR/VBR 和 ID3；不支持 free-format 或带不识别尾部数据的 MP3。MP3 时长按完整解码帧计数，包含编码延迟/填充，与浏览器显示可能有少量差异。没有 CRC 的压缩音频不能保证识别所有仍可解码的位变化。
 
+## AI 辅助创作（0.3.2）
+
+设置中独立配置 OpenAI-Compatible Chat Completions 的 Base URL（包括 `/v1`，不带结尾斜线）、模型、Key、SSE 与 Thinking。官方便捷选项使用 `https://api.xiaomimimo.com/v1` 和 `mimo-v2.6-flash`；可填写服务实际支持的其他 LLM 模型。TTS 三模型保持原协议。仅官方精确地址允许管理员明确勾选复用 TTS Key；自定义服务不会继承它。换地址时清除原独立 Key，需为新地址重新配置。
+
+支持 Thinking：不发送、MiMo `thinking.type=enabled/disabled`、`enable_thinking=true/false`、`reasoning_effort=low/medium/high`。管理员应按模型选择，服务不支持时明确报错，不降级或重试。不发送工具、联网搜索或 TTS audio 参数。官方协议见 [MiMo Chat Completions 文档](https://mimo.mi.com/docs/zh-CN/api/chat/openai-api)。
+
+VoiceDesign 的音色描述、各模式自然语言风格、导演三栏、播报稿、预置唱歌歌词与适用模式句内标签均提供 AI 操作。先在对应输入框写需求，点击 AI 后在候选区比较原文，主动应用；也可放弃或恢复应用前内容。导演三栏同时应用/恢复。应用后继续编辑会阻止恢复覆盖；请求期间编辑、切换模式或样本、取消及关闭页面都会使旧响应失效。AI 创作不生成、播放或改动 WAV；应用后仍需另行点击「生成语音」，旧音频按已有规则显示为历史结果。
+
+标签操作只允许插入工具栏目录中的标签，服务端独立验证原文、标点、空格、换行、Unicode 文本元素及原有方括号表达式完整保留。改稿、非法标签、拆分组合字符/Emoji/CRLF 均拒绝。导演返回严格 JSON 三个非空字符串；所有结果通过实际 Composition 字节/分段预算，不自动截断。
+
+LLM 配置和凭据放在 `TRIM_PKGETC/llm-private` 私有凭据容器（0600，目录 0700），API 仅返回非敏感设置及配置状态，权限保护不是加密。与 TTS Key 一起参与保留卸载/重装恢复；升级不覆盖。不得把该文件当作普通可分享设置导出。只发送当前操作必需的文本，不发送样本、音频或其他资产。
+
+默认只允许外部 HTTPS，连接时解析并校验实际 IP，禁止重定向及系统代理，防止 DNS 变化绕过私网限制。管理员可明确启用 HTTP/私有网络兼容服务；界面显示明文凭据与稿件的传输风险。API 普通请求上限仍为 128 KiB；LLM 响应最多 1 MiB、总时限 3 分钟、连接 15 秒、首响应/读取空闲 30 秒，全应用最多一个 AI 请求。不自动重试，取消已送达上游的请求仍可能计费。SSE 需正常 `stop`、`[DONE]`、完整事件和连接结束，推理字段不会成为正文；中断、空回答、截断、拒绝或工具调用均不产生可应用候选。没有持久 AI 历史或多轮聊天。
+
+构建与实机证据、限制见 [PR3 验证记录](verification/PR3.md)。前端候选状态测试：`npm --prefix frontend exec -- vitest run --root frontend --environment happy-dom tests/creative.test.js`。
+
 ## 数据、安全与边界
 
 | 内容 | 位置 / 规则 |
