@@ -1,8 +1,8 @@
 # MiMo TTS Studio
 
-独立的 fnOS 原生语音创作应用。管理员在浏览器编辑中文/英文脚本，选择 MiMo 预置音色、自然语言/导演指导、整体风格与句内标签，生成后试听、下载 WAV 或保存到私有音频库。
+独立的 fnOS 原生语音创作应用。管理员在浏览器编辑中文/英文脚本，使用预置音色、VoiceDesign 或 VoiceClone，配置自然语言/导演指导及适用标签，生成后试听、下载 WAV 或保存到私有音频库。VoiceDesign 的成功结果可以独立保存成持久克隆样本。
 
-本项目不是小米官方产品。PR1 仅支持 `mimo-v2.5-tts`，不包含 VoiceDesign、VoiceClone、录音或 MP3。后端 ASP.NET Core / .NET 10，前端 Vue 3 / TypeScript；FPK 携带 Linux x86-64 自包含运行时，生产不需要 SDK、Node.js、Docker、数据库或 NAS 声卡。
+本项目不是小米官方产品。不包含录音、云端训练、音色市场或 MP3 导出；MP3 仅可作为上传参考样本。后端 ASP.NET Core / .NET 10，前端 Vue 3 / TypeScript；FPK 携带 Linux x86-64 自包含运行时与纯托管 MP3 解码器，生产不需要 SDK、Node.js、ffmpeg、Docker、数据库或 NAS 声卡。
 
 ## 构建
 
@@ -22,7 +22,7 @@ bash scripts/build.sh
 
 产物为 `artifacts/mimotts.fpk`，暂存目录为 `artifacts/fpk/`。构建会执行 Vue 类型检查与生产打包、`dotnet publish -c Release -r linux-x64 --self-contained true`、许可证收集、图标生成和 `fnpack build`，最后输出 SHA-256。Windows 包装脚本明确使用 WSL 发行版 `Ubuntu`，其他名称可自行修改。Linux 不要复用 Windows 安装的 `node_modules`，先在对应环境运行 `npm ci`。
 
-实际构建环境及设备证据见 [verification/PR1.md](verification/PR1.md)。Manifest 的 `platform=x86` 与 .NET 的 `linux-x64` RID 含义不同。网关最低版本按当前文档声明 `1.1.3100`；本次实际测试系统为 `1.2.0800`，尚未在最小声明版本测试。
+实际构建环境及设备证据见 [PR1](verification/PR1.md) 和 [PR2](verification/PR2.md) 验证记录。Manifest 的 `platform=x86` 与 .NET 的 `linux-x64` RID 含义不同。网关最低版本按当前文档声明 `1.1.3100`；实际测试系统为 `1.2.0800`，尚未在最小声明版本测试。
 
 ## 安装与使用
 
@@ -35,12 +35,31 @@ bash scripts/build.sh
 
 可用预置 Voice ID：`mimo_default`、`冰糖`、`茉莉`、`苏打`、`白桦`、`Mia`、`Chloe`、`Milo`、`Dean`。默认音色随 MiMo 集群变化。自然语言与导演内容进入可选 `user` 消息，正文及标签进入 `assistant`；请求为官方 `/v1/chat/completions` 的非流式 WAV 协议。整体标签按每段重复前缀，唱歌显式添加 `(唱歌)`。这些都在请求预览显示；不暗中添加语速或改写正文。参考 [MiMo 官方接口文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)。
 
+## VoiceDesign、VoiceClone 与声音样本
+
+三种创作模式保留各自的当前编辑内容。结果展示真实生成模式和生成时参数；切换模式不会把其他模式迟到的结果标成当前模式的结果。刷新后可从音频库重新打开结果，编辑草稿不持久保存。
+
+| 模式 | 官方请求与本应用边界 |
+| --- | --- |
+| 预置音色 | `mimo-v2.5-tts`，`audio.voice` 为官方预置 ID，沿用 PR1 语义 |
+| VoiceDesign | `mimo-v2.5-tts-voicedesign`，音色描述及选用的自然语言/导演指导组成必填 user；无 `audio.voice`，显式 `audio.optimize_text_preview=false`，保留 assistant 原文；不开放唱歌或整体标签控件 |
+| VoiceClone | `mimo-v2.5-tts-voiceclone`，使用服务端样本 ID，后端构造 WAV `data:audio/wav;base64,...` 或 MP3 `data:audio/mpeg;base64,...`；支持自然语言/导演指导、整体与句内标签；不发送优化或唱歌参数 |
+
+所有模式都是非流式 WAV，使用同一任务/取消/结果管线。VoiceDesign 最多单段 3000 UTF-8 字节，不会拆成多次随机设计；超限时请先设计短样本，再使用 VoiceClone。不同设计请求不保证同一声音。本版不提供文本优化选项，API 也拒绝 `optimizeTextPreview=true`。
+
+Design → Clone：填写音色描述和试音正文 → 生成并试听 → 在结果区命名、点击「保存为克隆样本并切换」→ 修改克隆模式的新正文/风格 → 生成。保存动作复制已经成功的 WAV，不再次调用 MiMo；删除原设计结果、24 小时结果清理或重启都不影响样本。转换要求音频符合下述参考范围，超限会禁用并说明原因，不截断音频。这是本地音频复用，未向云端永久注册 Voice ID。
+
+声音样本库支持上传 WAV/MP3、显示实际格式/大小/时长、试听、选择、重命名及删除。上传只保存到 NAS；**仅点击 VoiceClone 生成时，所选完整参考音频与本次正文/指导才发送至小米云端，可能计费**。请仅使用自己有权使用的样本，建议清晰单人语音。已启动任务持有完整参考快照，任务期间删除或改名不会改变后续分段；新任务不能选择已删除的样本。
+
+参考音频上限为 **7,400,000 原始字节、0.2–120 秒**，编码后连同 Data URL 前缀严格小于官方 10 MB 限制。时长是本应用资源保护范围，不是 MiMo 官方强制时长；官方支持数秒短样本。WAV 使用现有完整 RIFF/PCM 校验；MP3 检查完整连续 MPEG Layer III 帧、CRC（若存在），并用 NLayer 3.0.0 逐帧解码，拒绝截断、坏帧、异常采样、格式伪装或中途改变采样率/声道。支持 MPEG 1/2/2.5、CBR/VBR 和 ID3；不支持 free-format 或带不识别尾部数据的 MP3。MP3 时长按完整解码帧计数，包含编码延迟/填充，与浏览器显示可能有少量差异。没有 CRC 的压缩音频不能保证识别所有仍可解码的位变化。
+
 ## 数据、安全与边界
 
 | 内容 | 位置 / 规则 |
 | --- | --- |
 | Key | `TRIM_PKGETC/mimo-key`，目录 0700、文件 0600；权限保护而非加密 |
 | 音频与元数据 | `TRIM_PKGVAR/audio/{服务端GUID}/`，按可信 UID 隔离 |
+| 持久参考样本 | `TRIM_PKGVAR/samples/{服务端GUID}/`，独立音频与元数据，按可信 UID 隔离 |
 | 任务 | 进程内，最多 100 条状态；重启后任务状态消失，成功资产仍可从音频库访问 |
 | 临时资源 | `TRIM_PKGTMP/mimotts-work`；提交暂存目录位于音频目录内以保证同盘原子重命名 |
 | Socket | `TRIM_APPDEST/app.sock`，0600；生产只监听该 Socket |
@@ -50,13 +69,13 @@ bash scripts/build.sh
 
 所有写请求要求同源 Origin 与不可预测 CSRF token。对 fnOS 去掉 Host 端口的转发行为，额外校验浏览器 Referer 的完整来源。不开 CORS；自定义网关或去掉 Referer 的浏览器策略可能导致写入被拒绝。生产 Release 编译不包含开发免认证开关。
 
-上限：请求体 128 KiB，正文 60000 UTF-8 字节，user 指令 6000 字节，每段正文连同前缀最多 3000 UTF-8 字节；目标 50–3000 个 Unicode 文本元素，默认 3000，最多 80 段。这是保守工程预算，不是 MiMo 官方硬限制。关闭分段时超限直接报错。唱歌歌词尽量保持完整，分段会影响连续性。
+上限：普通 API 请求体仍为 128 KiB；只有经同样鉴权/CSRF 检查的 `POST /api/samples/upload` 放宽为 7,400,000 字节，使用有界原始文件流、最多两个并行样本处理、30 秒超时，不信任扩展名/MIME 或 Content-Length。正文 60000 UTF-8 字节，user 指令 6000 字节，每段正文连同前缀最多 3000 UTF-8 字节；目标 50–3000 个 Unicode 文本元素，默认 3000，最多 80 段。这是保守工程预算，不是 MiMo 官方硬限制。关闭分段时超限直接报错。唱歌歌词尽量保持完整，分段会影响连续性。
 
 全应用同时最多一项生成，单段 3 分钟、整任务 20 分钟；响应 JSON 最多 90 MiB，最终 WAV 最多 64 MiB。取消会传播到 HTTP 请求，并在确认后标为已取消；服务已接收的请求仍可能计费。失败、取消与不完整音频不提交成功资产。支持 PCM 8/16/24/32 位和 IEEE float32、单/双声道 WAV，规范化为单声道 PCM16；段间采样率不同则明确失败，不做未经验证的重采样。
 
-私有音频数据配额 1 GiB、最多 1000 条资产，生成前要求磁盘保留 256 MiB。未保存结果在每次应用启动时清理超过 24 小时的条目；保存后持续保留至主动删除。应用重启后从音频库打开历史结果，不恢复编辑草稿。应用不会自动上传日志、文件、样本或浏览器草稿。
+生成音频与样本合计配额 1 GiB、最多 1000 条，提交前在同一存储锁中检查配额与磁盘保留 256 MiB 空间。未保存生成结果在每次应用启动时清理超过 24 小时的条目；已保存结果与声音样本持续保留至主动删除。应用重启后从库中打开历史结果，不恢复编辑草稿。应用不会自动上传日志、样本或浏览器草稿。参考音频内容、Data URL 和 Key 不进入任务/资产 JSON 摘要或日志。
 
-升级脚本不覆盖 Key 与音频。卸载向导默认保留数据：卸载前把 Key 备份至私有 `TRIM_PKGVAR/.retained-config`，防止平台删除 etc；重新安装时仅在没有新 Key 时恢复。选择「确认永久删除」仅删除带本应用归属标记的 `audio` 和 `.retained-config` 子目录，拒绝符号链接，不删除 TRIM 根目录、共享目录或用户文件。元数据、日志和运行锁等平台残余可由系统管理；本应用不扩大清理范围。
+升级脚本不覆盖 Key、PR1 历史音频或样本，旧元数据缺少模式字段时按预置模式读取。卸载向导默认保留数据：卸载前把 Key 备份至私有 `TRIM_PKGVAR/.retained-config`，防止平台删除 etc；重新安装时仅在没有新 Key 时恢复。选择「确认永久删除」仅删除带本应用归属标记的 `audio`、`samples` 和 `.retained-config` 子目录，拒绝符号链接，不删除 TRIM 根目录、共享目录或用户文件。元数据、日志和运行锁等平台残余可由系统管理；本应用不扩大清理范围。
 
 ## 开发与验证
 
@@ -73,6 +92,8 @@ dotnet run --project backend/Studio.csproj
 dotnet run --project tests/Studio.Tests.csproj -c Release
 python3 tests/lifecycle.py
 sudo python3 tests/production_gateway.py artifacts/fpk/app/server/MiMoStudio
+node --test frontend/tests/polling.test.mjs
+python3 tests/package.py
 ```
 
 实机验收：先安装 FPK，然后把 `tests/fnos_acceptance.py` 复制到指定 fnOS 测试机，以 root 执行。它通过真实私有 Socket 检查权限、范围请求、文件复用与 appcenter 启停，仅创建并清理有明确标签的合成静音测试文件，不调用 MiMo、不更改已有 Key。完整的浏览器登录、桌面 iframe、非管理员会话和在线合成仍应另外验证。
@@ -82,3 +103,5 @@ sudo python3 tests/production_gateway.py artifacts/fpk/app/server/MiMoStudio
 ## 来源与许可
 
 本仓库源代码为独立实现，MIT 授权。只读查阅了 SeleVox 的 `docs/MiMoTTS.md`，没有复制其 GPL 源代码、资源、密钥或用户文件，也没有构建依赖。协议以小米官方文档为依据；FPK 结构依据官方 fnpack 模板、[fnOS 网关文档](https://developer.fnnas.com/docs/core-concepts/gateway-registration/) 及其 [公开文档镜像](https://github.com/ckcoding/fnnas-docs)。打包时收集确切 .NET 运行时和前端依赖的第三方许可到 `server/licenses/`；不要移除后再分发。
+
+MP3 解码依赖 [NLayer 3.0.0](https://github.com/naudio/NLayer/tree/v3.0.0)，MIT 许可与上游版权保留在 `third_party/NLayer.LICENSE`，构建时随 FPK 分发；不引入 NAudio 或 Windows 播放依赖。测试中的 MP3 为原创正弦波，不是真实个人声音。

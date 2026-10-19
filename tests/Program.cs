@@ -96,6 +96,7 @@ Check(Gateway.SafeOrigin(ctx.Request),"fnOS stripped port accepted with matching
 ctx.Request.Headers.Origin="http://evil.test";Check(!Gateway.SafeOrigin(ctx.Request),"cross-origin rejected");
 ctx.Request.Headers.Origin="null";Check(!Gateway.SafeOrigin(ctx.Request),"opaque origin rejected");
 ctx.Request.Headers.Origin="http://nas.test:1234";Check(!Gateway.SafeOrigin(ctx.Request),"mismatched referer port rejected");
+await Pr2Tests.Run(Check, Reject);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler

@@ -5,7 +5,11 @@ namespace Studio;
 
 public sealed record ScriptRequest(string Text, string Voice = "mimo_default", string Style = "",
     string Mode = "natural", string Character = "", string Scene = "", string Direction = "",
-    string Tags = "", bool Singing = false, bool Split = true, int SegmentCharacters = 3000);
+    string Tags = "", bool Singing = false, bool Split = true, int SegmentCharacters = 3000,
+    string SynthesisMode = "preset", string VoiceDescription = "", string? SourceSampleId = null,
+    bool OptimizeTextPreview = false);
+public sealed record GenerationSummary(string SynthesisMode, string Model, string? Voice, string User,
+    string Prefix, int Segments, string? SourceSampleId, string? SourceSampleName);
 public sealed record ScriptPlan(string User, string Prefix, string[] Segments)
 {
     public string[] Assistant => Segments.Select(s => Prefix + s).ToArray();
@@ -13,10 +17,25 @@ public sealed record ScriptPlan(string User, string Prefix, string[] Segments)
 public static partial class Composition
 {
     public static readonly string[] Voices = ["mimo_default", "冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"];
+    public static string Model(string mode) => mode switch
+    {
+        "preset" => "mimo-v2.5-tts", "design" => "mimo-v2.5-tts-voicedesign",
+        "clone" => "mimo-v2.5-tts-voiceclone", _ => throw new InputError("无效的合成模式。")
+    };
     public static ScriptPlan Plan(ScriptRequest r)
     {
-        if (r.Text is null || r.Style is null || r.Character is null || r.Scene is null || r.Direction is null || r.Tags is null)
+        _ = Model(r.SynthesisMode);
+        if (r.Text is null || r.Style is null || r.Character is null || r.Scene is null || r.Direction is null || r.Tags is null || r.VoiceDescription is null)
             throw new InputError("字段不能为 null。");
+        if (r.OptimizeTextPreview) throw new InputError("本版不支持优化播报文本，请保留原文。");
+        if (r.SynthesisMode != "preset" && (r.Singing || r.Voice != "mimo_default"))
+            throw new InputError("VoiceDesign / VoiceClone 不支持预置音色或唱歌参数。");
+        if (r.SynthesisMode == "design" && (string.IsNullOrWhiteSpace(r.VoiceDescription) || r.Tags.Length > 0))
+            throw new InputError("VoiceDesign 需要音色描述，且不接受整体风格标签。");
+        if (r.SynthesisMode != "design" && r.VoiceDescription.Length > 0)
+            throw new InputError("音色描述仅适用于 VoiceDesign。");
+        if (r.SynthesisMode == "clone" ? !Storage.ValidId(r.SourceSampleId ?? "") : r.SourceSampleId != null)
+            throw new InputError("VoiceClone 必须提供合法样本 ID；其他模式不接受参考样本。");
         if (string.IsNullOrWhiteSpace(r.Text) || Encoding.UTF8.GetByteCount(r.Text) > 60000)
             throw new InputError("正文不能为空，且最多 60000 UTF-8 字节。");
         if (!Voices.Contains(r.Voice) || r.Mode is not ("natural" or "director" or "combined"))
@@ -27,9 +46,16 @@ public static partial class Composition
         var director = string.Join("\n", new[] { ("角色", r.Character), ("场景", r.Scene), ("指导", r.Direction) }
             .Where(x => x.Item2.Length > 0).Select(x => x.Item1 + "：" + x.Item2));
         var user = r.Mode switch { "director" => director, "combined" => string.Join("\n", new[] { r.Style, director }.Where(x => x.Length > 0)), _ => r.Style };
+        if (r.SynthesisMode == "design") user = string.Join("\n", new[] { r.VoiceDescription, user }.Where(x => x.Length > 0));
         if (Encoding.UTF8.GetByteCount(user) > 6000) throw new InputError("风格指令最多 6000 UTF-8 字节。");
         var prefix = (r.Singing ? "(唱歌)" : "") + (r.Tags.Length > 0 ? "(" + r.Tags + ")" : "");
         int budget = 3000 - Encoding.UTF8.GetByteCount(prefix);
+        if (r.SynthesisMode == "design")
+        {
+            if (Encoding.UTF8.GetByteCount(r.Text) > budget)
+                throw new InputError("VoiceDesign 仅支持单次试音（最多 3000 UTF-8 字节）。请先设计短样本，再用 VoiceClone 合成长文本；多次设计不保证同一音色。");
+            return new(user, "", [r.Text]);
+        }
         if (!r.Split)
         {
             if (Encoding.UTF8.GetByteCount(r.Text) > budget) throw new InputError("关闭分段时正文超过每段字节上限。");

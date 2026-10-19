@@ -1,6 +1,7 @@
 namespace Studio;
 
-public sealed record JobView(string Id, string State, int Completed, int Total, string? AssetId, string? Error);
+public sealed record JobView(string Id, string State, int Completed, int Total, string? AssetId, string? Error,
+    string SynthesisMode = "preset", GenerationSummary? Parameters = null);
 public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime lifetime)
 {
     private sealed class Job(string owner, int total)
@@ -21,9 +22,17 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
             var key = storage.ReadKey();
             if (string.IsNullOrEmpty(key)) throw new InputError("请先在设置中配置 MiMo API Key。");
             if (!storage.HasSpace()) throw new InputError("音频库或磁盘空间不足，请清理旧音频。");
+            // Read under Storage's lock before the job starts. Later rename/delete cannot
+            // change the bytes or safe summary used by any segment of this task.
+            var sample = request.SynthesisMode == "clone" ? storage.SnapshotSample(request.SourceSampleId!, owner) : null;
+            var summary = new GenerationSummary(request.SynthesisMode, Composition.Model(request.SynthesisMode),
+                request.SynthesisMode == "preset" ? request.Voice : null, plan.User, plan.Prefix, plan.Segments.Length,
+                sample?.Metadata.Id, sample?.Metadata.Name);
             while (jobs.Count >= 100) { var first = jobs.First(); first.Value.Cancel.Dispose(); jobs.Remove(first.Key); }
             var job = new Job(owner, plan.Segments.Length); jobs[job.View.Id] = job;
-            current = Task.Run(() => Run(job, request, plan, key)); return job.View;
+            job.View = job.View with { SynthesisMode = request.SynthesisMode, Parameters = summary };
+            string? sampleDataUrl = sample?.DataUrl;
+            current = Task.Run(() => Run(job, request, plan, key, sampleDataUrl, summary)); return job.View;
         }
     }
     public JobView? Get(string id, string owner) { lock (gate) return jobs.TryGetValue(id, out var job) && job.Owner == owner ? job.View : null; }
@@ -37,7 +46,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
             return job.View;
         }
     }
-    private async Task Run(Job job, ScriptRequest request, ScriptPlan plan, string key)
+    private async Task Run(Job job, ScriptRequest request, ScriptPlan plan, string key, string? sampleDataUrl, GenerationSummary summary)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(job.Cancel.Token, lifetime.ApplicationStopping);
         timeout.CancelAfter(TimeSpan.FromMinutes(20));
@@ -48,7 +57,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
             foreach (var segment in plan.Segments)
             {
                 ct.ThrowIfCancellationRequested();
-                var pcm = await mimo.Generate(key, request, plan, segment, ct);
+                var pcm = await mimo.Generate(key, request, plan, segment, ct, sampleDataUrl);
                 bytes += pcm.Data.Length;
                 if (bytes > Wave.MaxBytes - 44) throw new InputError("结果超出 64 MiB 音频上限。");
                 pieces.Add(pcm);
@@ -58,7 +67,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
             lock (gate)
             {
                 ct.ThrowIfCancellationRequested();
-                var asset = storage.Commit(job.Owner, request, wave);
+                var asset = storage.Commit(job.Owner, request, wave, summary);
                 job.View = job.View with { State = "succeeded", AssetId = asset.Id };
             }
         }

@@ -2,7 +2,7 @@
 Usage: sudo python3 tests/production_gateway.py artifacts/fpk/app/server/MiMoStudio
 No MiMo calls are made. Identity headers are injected only by the root test client.
 """
-import http.client, json, os, pathlib, pwd, shutil, socket, subprocess, sys, tempfile, time
+import http.client, io, json, os, pathlib, pwd, shutil, socket, subprocess, sys, tempfile, time, wave
 
 assert sys.platform == 'linux' and os.getuid() == 0, 'run as Linux root for gateway peer simulation'
 exe=pathlib.Path(sys.argv[1]).resolve()
@@ -17,15 +17,16 @@ def drop():
     os.setgroups([]);os.setgid(account.pw_gid);os.setuid(account.pw_uid)
 process=subprocess.Popen([str(exe)],cwd=exe.parent,env=env,preexec_fn=drop,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
 sock=root/'target/app.sock'
-def request(path='/api/session',method='GET',data=None,headers=None,identity=True):
+def request(path='/api/session',method='GET',data=None,headers=None,identity=True,raw=None,chunked=False):
     connection=http.client.HTTPConnection('nas.test')
     connection.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.sock.settimeout(5);connection.sock.connect(str(sock))
     h={'Host':'nas.test'}
     if identity:h.update({'X-Trim-Userid':'1000','X-Trim-Username':'admin','X-Trim-Isadmin':'true'})
     if data is not None:h['Content-Type']='application/json'
     h.update(headers or {})
-    body=json.dumps(data) if data is not None else None
-    connection.request(method,'/app/mimotts'+path,body,h)
+    body=raw if raw is not None else json.dumps(data) if data is not None else None
+    if chunked:body=iter([body[i:i+16000] for i in range(0,len(body),16000)])
+    connection.request(method,'/app/mimotts'+path,body,h,encode_chunked=chunked)
     response=connection.getresponse();content=response.read();status=response.status;connection.close();return status,content
 count=0
 def check(value,name):
@@ -56,6 +57,35 @@ try:
     check(request('/api/key','DELETE',headers=writes)[0]==204,'Key clear')
     check(request('/api/jobs','POST',{'text':'不会发送'},writes)[0]==400,'no Key prevents synthesis')
     check(request('/api/preview','POST',{'text':'x'*140000},writes)[0] in (400,413),'request body bound')
+    content=io.BytesIO()
+    with wave.open(content,'wb') as w:
+        w.setnchannels(1);w.setsampwidth(2);w.setframerate(24000);w.writeframes(b'\0\0'*24000*4)
+    reference=content.getvalue()
+    upload={**writes,'X-Sample-Name':'integration-sample','X-Sample-Format':'wav','Content-Type':'application/octet-stream'}
+    check(len(reference)>128*1024,'test fixture exceeds ordinary JSON cap')
+    status,body=request('/api/samples/upload','POST',headers=upload,raw=reference)
+    check(status==201,'valid large WAV upload accepted only on upload route')
+    sample=json.loads(body)
+    check(sample['durationSeconds']==4 and sample['bytes']==len(reference) and sample['format']=='wav','sample metadata from actual WAV')
+    check(request('/api/samples/'+sample['id']+'/audio')[1]==reference,'private sample playback reuses upload bytes')
+    check(request('/api/samples/'+sample['id']+'/audio',headers={'X-Trim-Userid':'1001'})[0]==404,'cross-user sample audio denied')
+    check(request('/api/samples/'+sample['id'],'PUT',{'name':'renamed'},writes)[0]==200,'sample rename through CSRF-protected JSON API')
+    check(request('/api/samples/'+sample['id'],'DELETE',headers={**writes,'X-Trim-Userid':'1001'})[0]==404,'cross-user sample deletion denied')
+    check(request('/api/samples/upload','POST',headers={**upload,'Origin':'http://evil.test'},raw=reference)[0]==403,'upload Origin checked before accepting file')
+    check(request('/api/samples/upload','POST',headers=upload,raw=b'RIFF fake')[0]==400,'invalid uploaded audio rejected')
+    mp3=(pathlib.Path(__file__).parent/'fixtures/tone.mp3').read_bytes()
+    check(request('/api/samples/upload','POST',headers=upload,raw=mp3)[0]==400,'file extension/declared format cannot disguise MP3')
+    status,body=request('/api/samples/upload','POST',headers={**upload,'X-Sample-Format':'mp3'},raw=mp3,chunked=True)
+    check(status==201,'chunked MP3 upload fully decoded without Content-Length trust')
+    mp3sample=json.loads(body)
+    status,preview=request('/api/preview','POST',{'text':'new text','synthesisMode':'clone','sourceSampleId':sample['id']},writes)
+    check(status==200 and b'base64' not in preview and b'audio/wav' in preview,'clone preview validates sample with no reference bytes')
+    check(request('/api/preview','POST',{'text':'new text','synthesisMode':'clone','sourceSampleId':sample['id']},{**writes,'X-Trim-Userid':'1001'})[0]==400,'clone preview cannot cross sample ownership')
+    check(request('/api/samples/../../etc/mimo-key/audio')[0]==404,'sample traversal denied')
+    check(request('/api/samples/upload','POST',headers=upload,raw=b'')[0]==400,'empty sample rejected')
+    check(request('/api/samples/upload','POST',headers={**upload,'Content-Length':'7400001'},raw=b'')[0]==413,'sample upload body rejected before receiving oversized file')
+    check(request('/api/samples/'+sample['id'],'DELETE',headers=writes)[0]==204 and request('/api/samples/'+mp3sample['id'],'DELETE',headers=writes)[0]==204,'owned sample deletion succeeds')
+    check(json.loads(request('/api/samples')[1])==[],'upload failures never leave valid samples')
     # Even the socket owner cannot impersonate the gateway by forging headers.
     child=os.fork()
     if child==0:
