@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import ProbeButton from './ProbeButton.vue'
 import {ref,reactive,watch,onMounted,onUnmounted} from 'vue'
 import type {VoiceSample} from './samples'
 const props=defineProps<{api:(path:string,method?:string,data?:unknown,signal?:AbortSignal)=>Promise<any>;samples:VoiceSample[];ttsDirty:boolean;llmDirty:boolean}>()
+const emit=defineEmits<{change:[value:{states:Record<string,{state:string;message:string}>;busy:boolean}]}>()
 const services=[{id:'preset',name:'MiMo 预置音色'},{id:'design',name:'MiMo VoiceDesign'},{id:'clone',name:'MiMo VoiceClone'},{id:'llm',name:'LLM 创作服务'}]
 const rows=reactive<Record<string,any>>(Object.fromEntries(services.map(s=>[s.id,{state:'untested',check:null,result:null,error:''}])))
 const labels:Record<string,string>={untested:'未检测',ready:'配置就绪',running:'检测中',canceling:'正在取消',succeeded:'成功',failed:'失败',canceled:'取消',expired:'过期'}
@@ -10,7 +12,7 @@ let runId='',disposed=false,epoch=0,controller:AbortController|undefined,timer:R
 const dirty=(id:string)=>id==='llm'?props.llmDirty:props.ttsDirty
 const input=(id:string)=>({service:id,sampleId:id==='clone'?sampleId.value||null:null})
 async function precheck(){
- if(checking||!open.value)return;checking=true
+ if(checking||(!open.value&&!active.value&&!Object.values(rows).some(row=>row.result)))return;checking=true
  const version=epoch
  try{for(const s of services){const value=await props.api('/diagnostics/check','POST',input(s.id));if(disposed||version!==epoch)return;const row=rows[s.id];if(row.check&&row.check.revision!==value.revision){if(!['untested','ready'].includes(row.state))row.state='expired';row.result=null;if(active.value===s.id)stop(true)}row.check=value;if(row.state==='untested'&&value.ready)row.state='ready'}}catch{if(!disposed&&version===epoch)for(const row of Object.values(rows))row.error='预检查失败，请重新打开服务检测。'}finally{checking=false}
 }
@@ -38,7 +40,7 @@ async function run(id:string){
   const check=await props.api('/diagnostics/check','POST',input(id),signal)
   if(disposed||version!==epoch)return
   row.check=check
-  if(!check.ready){row.state='untested';return}
+  if(!check.ready){row.state='failed';row.error=check.reason;return}
   const request={...input(id),revision:check.revision,id:Array.from(crypto.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('')}
   runId=request.id
   const result=await props.api('/diagnostics/run','POST',request,signal)
@@ -48,8 +50,10 @@ async function run(id:string){
  finally{if(version===epoch){active.value='';runId=''}}
 }
 function cancel(){void stop()}
+defineExpose({run,cancel})
+watch([rows,active],()=>emit('change',{busy:!!active.value,states:Object.fromEntries(Object.entries(rows).map(([id,row])=>[id,{state:row.state,message:row.error||row.result?.reason||row.check?.reason||''}]))}),{deep:true,immediate:true})
 onMounted(()=>{timer=setInterval(()=>void precheck(),2000)})
 onUnmounted(()=>{disposed=true;stop(true);clearInterval(timer)})
 </script>
-<template><section class="settings card diagnostics"><details :open="open" @toggle="open=($event.target as HTMLDetailsElement).open"><summary>服务检测 · MiMo / LLM</summary><p>配置预检查仅在本机进行。只有点击「真实检测」才发送固定短文本，在线可能收费，不自动重试；不保存音频、不改变工作台。</p><div v-for="service in services" :key="service.id" class="sample-entry"><strong>{{service.name}}</strong><label v-if="service.id==='clone'">本次检测参考样本（选择并点击检测即授权上传）<select v-model="sampleId"><option value="">不选择，不上传</option><option v-for="s in samples" :key="s.id" :value="s.id">{{s.name}} · {{s.format}} · {{s.durationSeconds.toFixed(2)}} 秒</option></select></label><p>{{rows[service.id].check?.target||'尚未预检查'}}</p><p>{{rows[service.id].check?.reason}}</p><p v-if="dirty(service.id)" class="old">相关配置尚未保存，请先保存再检测；旧结果已过期。</p><p role="status">{{labels[rows[service.id].state]}}<template v-if="rows[service.id].result"> · {{rows[service.id].result.elapsedMs}} ms · {{new Date(rows[service.id].result.testedAt).toLocaleString()}} · {{rows[service.id].result.category}}<br>{{rows[service.id].result.reason}}</template></p><p v-if="rows[service.id].error" role="alert">{{rows[service.id].error}}</p><button :disabled="!!active||dirty(service.id)||!rows[service.id].check?.ready" @click="run(service.id)">真实检测（可能收费）</button><button v-if="active===service.id" class="quiet" @click="cancel">取消检测</button></div></details></section></template>
+<template><section class="settings card diagnostics"><details :open="open" @toggle="open=($event.target as HTMLDetailsElement).open"><summary>服务检测 · MiMo / LLM</summary><p>配置预检查仅在本机进行。点击「服务检测」发送固定短文本，不自动重试；不保存音频、不改变工作台。</p><div v-for="service in services" :key="service.id" class="sample-entry"><strong>{{service.name}}</strong><label v-if="service.id==='clone'">本次检测参考样本（选择并点击检测即授权上传）<select v-model="sampleId"><option value="">不选择，不上传</option><option v-for="s in samples" :key="s.id" :value="s.id">{{s.name}} · {{s.format}} · {{s.durationSeconds.toFixed(2)}} 秒</option></select></label><p>{{rows[service.id].check?.target||'尚未预检查'}}</p><p>{{rows[service.id].check?.reason}}</p><p v-if="dirty(service.id)" class="old">相关配置尚未保存，请先保存再检测；旧结果已过期。</p><p role="status">{{labels[rows[service.id].state]}}<template v-if="rows[service.id].result"> · {{rows[service.id].result.elapsedMs}} ms · {{new Date(rows[service.id].result.testedAt).toLocaleString()}} · {{rows[service.id].result.category}}<br>{{rows[service.id].result.reason}}</template></p><p v-if="rows[service.id].error" role="alert">{{rows[service.id].error}}</p><ProbeButton label="服务检测" :service="service.name" :state="rows[service.id].state" :message="rows[service.id].error||rows[service.id].result?.reason||rows[service.id].check?.reason" :busy="!!active" :disabled="dirty(service.id)||!rows[service.id].check?.ready" @probe="run(service.id)"/><button v-if="active===service.id" class="quiet" @click="cancel">取消检测</button></div></details></section></template>
 <style scoped>.diagnostics summary{cursor:pointer}.diagnostics p{overflow-wrap:anywhere}.diagnostics button{margin-right:8px}</style>

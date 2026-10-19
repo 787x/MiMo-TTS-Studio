@@ -92,7 +92,7 @@ public sealed class Diagnostics(Storage storage, Mimo mimo, Llm llm, TimeSpan? b
                 >=500=>("upstream","上游服务异常"), _=>("http","上游 HTTP 请求失败") };
             reason+=$"（HTTP {e.Status}），未重试。";
         }
-        catch(OperationCanceledException) { state=aborted.IsCancellationRequested||IsCanceled(input.Id,owner)?"canceled":"failed";category=state=="canceled"?"canceled":"timeout";reason=state=="canceled"?"已取消；已发出的请求仍可能计费。":"检测超时；未重试。"; }
+        catch(OperationCanceledException) { state=aborted.IsCancellationRequested||IsCanceled(input.Id,owner)?"canceled":"failed";category=state=="canceled"?"canceled":"timeout";reason=state=="canceled"?"检测已取消。":"检测超时；未重试。"; }
         catch(EmptyAudioError) { state="failed";category="empty_audio";reason="服务返回空音频。"; }
         catch(Exception e) when(e is HttpRequestException or IOException) {state="failed";category="connection";reason="连接失败或中断，未重试。";}
         catch(Exception e) when(e is InputError or JsonException or InvalidOperationException or KeyNotFoundException or DecoderFallbackException or FormatException or IndexOutOfRangeException)

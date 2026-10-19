@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ProbeButton from "./ProbeButton.vue"
 import Diagnostics from "./Diagnostics.vue"
 import {getTheme,setTheme} from "./theme"
 import AiSettings from "./AiSettings.vue"
@@ -12,6 +13,8 @@ type Asset={id:string;title:string;voice:string;created:string;saved:boolean;byt
 type Job={id:string;state:string;completed:number;total:number;assetId:string|null;error:string|null;synthesisMode:SynthesisMode}
 type Plan={user:string;prefix:string;segments:string[];assistant:string[];model:string;sourceSample:VoiceSample|null}
 const theme=ref(getTheme()),llmDirty=ref(false)
+const diagnostics=ref<InstanceType<typeof Diagnostics>>()
+const diagnosticState=ref<{states:Record<string,{state:string;message:string}>;busy:boolean}>({states:{},busy:false})
 function toggleTheme(){theme.value=theme.value==='light'?'dark':'light';theme.value=setTheme(theme.value)}
 const base='/app/mimotts/api'
 const modeLabels:Record<SynthesisMode,string>={preset:'预置音色',design:'VoiceDesign',clone:'VoiceClone'}
@@ -89,9 +92,9 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
  <main>
   <section class="intro"><div><span class="eyebrow">VOICE WORKSPACE / 02</span><h1>让文字，拥有表达。</h1><p>从一句问候到一段故事，编排属于你的声音。</p></div><span class="badge">{{modeLabels[selectedMode]}} · MiMo V2.5</span></section>
   <div v-if="error" class="alert" role="alert">{{error}}</div><div v-if="notice" class="notice" role="status">{{notice}}</div>
-  <section v-if="showSettings" class="settings card"><div><div class="settings-title"><h2>服务端 API Key</h2><a class="button quiet" href="https://platform.xiaomimimo.com/console/api-keys" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">获取 / 管理 API Key ↗</a></div><p>Key 保存在 NAS 应用私有目录，仅显示配置状态。文件权限保护，不是加密。</p></div><form @submit.prevent="configure()"><input type="password" v-model="key" autocomplete="new-password" placeholder="输入新的 MiMo API Key" maxlength="512" aria-label="MiMo API Key"><button :disabled="!key||working">更新 Key</button><button type="button" class="quiet danger" :disabled="!configured||working" @click="configure(true)">清除</button></form></section>
-  <AiSettings v-if="showSettings" :api="api" @dirty="llmDirty=$event"/>
-  <Diagnostics v-if="showSettings" :api="api" :samples="samples" :tts-dirty="!!key||working" :llm-dirty="llmDirty"/>
+  <section v-if="showSettings" class="settings card"><div><div class="settings-title"><h2>服务端 API Key</h2><div class="settings-key-actions"><ProbeButton service="MiMo" :state="diagnosticState.states.preset?.state" :message="diagnosticState.states.preset?.message" :busy="diagnosticState.busy" :disabled="!!key||working" @probe="diagnostics?.run('preset')"/><a class="button quiet" href="https://platform.xiaomimimo.com/console/api-keys" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">获取 / 管理 API Key ↗</a></div></div><p>Key 保存在 NAS 应用私有目录，仅显示配置状态。文件权限保护，不是加密。</p></div><form @submit.prevent="configure()"><input type="password" v-model="key" autocomplete="new-password" placeholder="输入新的 MiMo API Key" maxlength="512" aria-label="MiMo API Key"><button :disabled="!key||working">更新 Key</button><button type="button" class="quiet danger" :disabled="!configured||working" @click="configure(true)">清除</button></form></section>
+  <AiSettings v-if="showSettings" :api="api" :tts-dirty="!!key||working" :probe-state="diagnosticState.states.llm" :probe-busy="diagnosticState.busy" @probe="diagnostics?.run('llm')" @dirty="llmDirty=$event"/>
+  <Diagnostics ref="diagnostics" v-if="showSettings" @change="diagnosticState=$event" :api="api" :samples="samples" :tts-dirty="!!key||working" :llm-dirty="llmDirty"/>
   <div v-if="loading" class="card">正在连接创作工作台…</div>
   <div v-else class="workspace">
    <section class="card compose">
@@ -114,7 +117,7 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     <div v-if="selectedMode!=='design'" class="options"><label v-if="selectedMode==='preset'" class="check"><input type="checkbox" v-model="form.singing">唱歌模式 <small>每段添加 (唱歌)</small></label><label class="check"><input type="checkbox" v-model="form.split">自动分段</label><label class="target">目标文本元素数 <input type="number" v-model.number="form.segmentCharacters" min="50" max="3000" :disabled="!form.split"></label></div>
     <p class="hint">{{selectedMode==='design'?'VoiceDesign 只生成一段试音，最多 3000 UTF-8 字节。长文本请先保存声音样本，再用 VoiceClone；不会拆成多个随机设计。':'每段含前缀最多 3000 UTF-8 字节；按自然句边界切分。唱歌仅适用于预置模式，歌词建议保持完整。'}}</p>
     <div class="actions"><button class="quiet" @click="plan">预览最终请求</button><button class="primary" :disabled="busy||!configured||!form.text.trim()||(selectedMode==='design'&&!form.voiceDescription.trim())||(selectedMode==='clone'&&!selectedSample)" @click="generate">{{busy?'生成进行中…':'✦ 生成语音'}}</button></div>
-    <p class="privacy">在线服务，可能产生费用。仅点击「生成语音」发送本次正文与风格{{selectedMode==='clone'?'及选中的完整参考音频到小米云端':''}}；分段逐次请求，不自动重试。取消后已发出的请求仍可能计费。仅保存、上传或试听样本不发送给 MiMo。</p>
+    <p class="privacy">仅点击「生成语音」发送本次正文与风格{{selectedMode==='clone'?'及选中的完整参考音频到小米云端':''}}；分段逐次请求，不自动重试。仅保存、上传或试听样本不发送给 MiMo。</p>
     <details v-if="preview" open class="preview"><summary>实际提交预览 · {{preview.segments.length}} 段 <em v-if="!previewCurrent">（输入已更改，请重新预览）</em></summary><p class="hint">{{preview.model}} · 非流式 WAV<span v-if="preview.sourceSample"> · 参考样本：{{preview.sourceSample.name}}（{{preview.sourceSample.format}}，{{preview.sourceSample.durationSeconds.toFixed(2)}} 秒）</span></p><h3>user · 风格指令 / 音色描述</h3><pre>{{preview.user||'（省略 user 消息）'}}</pre><div v-for="(text,i) in preview.assistant" :key="i"><h3>assistant · 第 {{i+1}} 段</h3><pre>{{text}}</pre></div></details>
    </section>
    <aside>

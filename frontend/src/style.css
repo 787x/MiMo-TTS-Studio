@@ -7,3 +7,5 @@
 
 input::placeholder,textarea::placeholder{color:var(--placeholder,#757575)}
 :root[data-theme="dark"]{--placeholder:#a4b4a7;scrollbar-color:#526b58 #202c27}
+
+.settings-key-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}.settings-key-actions .probe-button{font-size:12px;padding:7px 10px}
