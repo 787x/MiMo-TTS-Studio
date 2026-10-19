@@ -24,7 +24,7 @@ with tarfile.open(path,'r:gz') as outer:
         assert any('NLayer' in n and n.endswith('NLayer.LICENSE') for n in members)
         assert any('microsoft.netcore.app.runtime.linux-x64' in n and 'LICENSE' in n for n in members)
         assert any('microsoft.aspnetcore.app.runtime.linux-x64' in n and 'LICENSE' in n for n in members)
-        assert all('node_modules/' not in n and '/.dev/' not in n and 'SeleVox' not in n and not n.endswith(('mimo-key','sample.json','.partial','.pdb')) for n in members)
+        assert all('node_modules/' not in n and '/.dev/' not in n and 'SeleVox' not in n and not n.endswith(('mimo-key','llm-private','sample.json','.partial','.pdb')) for n in members)
         deps=read('server/MiMoStudio.deps.json')
         assert b'linux-x64' in deps and b'WindowsDesktop' not in deps
 print('PASS FPK metadata, scripts, gateway, non-root privilege, ELF/runtime, UI, notices, independence and clean payload')

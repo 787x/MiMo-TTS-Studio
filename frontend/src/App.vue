@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AiSettings from "./AiSettings.vue"
+import AiTool from "./AiTool.vue"
 import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue'
 import SampleLibrary from './SampleLibrary.vue'
 import {startPolling} from './polling'
@@ -83,18 +85,26 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
  <main>
   <section class="intro"><div><span class="eyebrow">VOICE WORKSPACE / 02</span><h1>让文字，拥有表达。</h1><p>从一句问候到一段故事，编排属于你的声音。</p></div><span class="badge">{{modeLabels[selectedMode]}} · MiMo V2.5</span></section>
   <div v-if="error" class="alert" role="alert">{{error}}</div><div v-if="notice" class="notice" role="status">{{notice}}</div>
-  <section v-if="showSettings" class="settings card"><div><h2>服务端 API Key</h2><p>Key 保存在 NAS 应用私有目录，仅显示配置状态。文件权限保护，不是加密。</p></div><form @submit.prevent="configure()"><input type="password" v-model="key" autocomplete="new-password" placeholder="输入新的 MiMo API Key" maxlength="512" aria-label="MiMo API Key"><button :disabled="!key||working">更新 Key</button><button type="button" class="quiet danger" :disabled="!configured||working" @click="configure(true)">清除</button></form></section>
+  <section v-if="showSettings" class="settings card"><div><div class="settings-title"><h2>服务端 API Key</h2><a class="button quiet" href="https://platform.xiaomimimo.com/console/api-keys" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">获取 / 管理 API Key ↗</a></div><p>Key 保存在 NAS 应用私有目录，仅显示配置状态。文件权限保护，不是加密。</p></div><form @submit.prevent="configure()"><input type="password" v-model="key" autocomplete="new-password" placeholder="输入新的 MiMo API Key" maxlength="512" aria-label="MiMo API Key"><button :disabled="!key||working">更新 Key</button><button type="button" class="quiet danger" :disabled="!configured||working" @click="configure(true)">清除</button></form></section>
+  <AiSettings v-if="showSettings" :api="api"/>
   <div v-if="loading" class="card">正在连接创作工作台…</div>
   <div v-else class="workspace">
    <section class="card compose">
     <div class="synthesis-tabs" role="group" aria-label="合成模式"><button v-for="m in (['preset','design','clone'] as const)" :key="m" :class="{active:selectedMode===m}" @click="selectedMode=m">{{modeLabels[m]}}</button></div>
+    <AiTool v-if="selectedMode==='design'" :key="selectedMode+'description'" :draft="form" :api="api" task="description" label="AI 完善音色描述" @apply="Object.assign(form,$event)"/>
     <label v-if="selectedMode==='design'" class="voice-description">音色描述<textarea v-model="form.voiceDescription" rows="3" placeholder="例如：成年女性，声音温暖醇厚，带一点沙哑，像深夜电台的主持人。"></textarea><small>描述进入 user 指令；下方正文进入 assistant。保持原文，不启用服务端优化。每次独立设计具有随机性，不保证相同描述得到同一声音。</small></label>
     <div v-if="selectedMode==='clone'" class="clone-source"><label>参考声音样本<select v-model="form.sourceSampleId"><option :value="null" disabled>从持久样本库选择；可在右侧上传</option><option v-for="s in samples" :key="s.id" :value="s.id">{{s.name}} · {{s.format.toUpperCase()}} · {{s.durationSeconds.toFixed(2)}} 秒</option></select></label><template v-if="selectedSample"><p class="hint">{{selectedSample.format.toUpperCase()}} · {{selectedSample.durationSeconds.toFixed(2)}} 秒 · {{size(selectedSample.bytes)}} · 本地音频样本，不是云端 Voice ID</p><audio :key="selectedSample.id" :src="base+'/samples/'+selectedSample.id+'/audio'" controls preload="metadata" aria-label="当前克隆参考样本"></audio></template><p v-else class="hint">先上传 WAV / MP3 或从 VoiceDesign 结果保存样本。已删除的样本不能用于新任务。</p></div>
     <div class="section-title"><h2><span>01</span> 脚本与演绎</h2><small>{{textBytes.toLocaleString()}} / 60,000 bytes</small></div>
+    <div class="script-ai-tools">
+    <AiTool :key="selectedMode+'script'+form.singing" :draft="form" :api="api" :task="selectedMode==='preset'&&form.singing?'lyrics':'script'" :label="selectedMode==='preset'&&form.singing?'AI 写歌词':'AI 写稿'" @apply="Object.assign(form,$event)"/>
+    <AiTool v-if="selectedMode!=='design'" :key="selectedMode+'tags'" :draft="form" :api="api" task="tags" label="AI 添加标签" @apply="Object.assign(form,$event)"/>
+    </div>
     <div class="editor"><div v-if="selectedMode!=='design'" class="toolbar"><span>插入标签</span><button v-for="tag in labels" :key="tag" class="tag" @mousedown.prevent @click="insert(tag)">{{tag}}</button></div><textarea ref="editor" v-model="form.text" class="script" aria-label="多行语音脚本" spellcheck="false" placeholder="写下你想听见的文字，或在光标处插入句内标签…"></textarea><div class="editor-foot">{{selectedMode==='design'?'试音正文 · 原文提交':'TEXT → VOICE'}} <span>支持中文 / English</span></div></div>
     <div v-if="selectedMode!=='design'" class="controls"><label v-if="selectedMode==='preset'">预置音色<select v-model="form.voice"><option v-for="v in voices" :key="v" :value="v">{{v==='mimo_default'?'MiMo 默认（随集群变化）':v}}</option></select></label><label>整体风格标签<input v-model="form.tags" placeholder="例如：温柔 清亮" maxlength="200"></label></div>
     <div class="tabs" role="group" aria-label="风格模式"><button v-for="m in [{id:'natural',name:'自然语言'},{id:'director',name:'导演模式'},{id:'combined',name:'组合指导'}]" :key="m.id" :class="{active:form.mode===m.id}" @click="form.mode=m.id">{{m.name}}</button></div>
+    <AiTool v-if="form.mode!=='director'" :key="selectedMode+'style'" :draft="form" :api="api" task="style" label="AI 完善自然语言风格" @apply="Object.assign(form,$event)"/>
     <label v-if="form.mode!=='director'">自然语言风格说明<textarea v-model="form.style" rows="2" placeholder="用轻快明亮的语气朗读，语速舒缓，带着笑意。"></textarea></label>
+    <AiTool v-if="form.mode!=='natural'" :key="selectedMode+'director'" :draft="form" :api="api" task="director" label="AI 完善导演方案" @apply="Object.assign(form,$event)"/>
     <div v-if="form.mode!=='natural'" class="director"><label>角色<textarea v-model="form.character" rows="2" placeholder="人物身份、性格与说话习惯"></textarea></label><label>场景<textarea v-model="form.scene" rows="2" placeholder="此刻发生了什么，在对谁说话"></textarea></label><label>指导<textarea v-model="form.direction" rows="2" placeholder="语速、气息、停顿、重音和情绪"></textarea></label></div>
     <div v-if="selectedMode!=='design'" class="options"><label v-if="selectedMode==='preset'" class="check"><input type="checkbox" v-model="form.singing">唱歌模式 <small>每段添加 (唱歌)</small></label><label class="check"><input type="checkbox" v-model="form.split">自动分段</label><label class="target">目标文本元素数 <input type="number" v-model.number="form.segmentCharacters" min="50" max="3000" :disabled="!form.split"></label></div>
     <p class="hint">{{selectedMode==='design'?'VoiceDesign 只生成一段试音，最多 3000 UTF-8 字节。长文本请先保存声音样本，再用 VoiceClone；不会拆成多个随机设计。':'每段含前缀最多 3000 UTF-8 字节；按自然句边界切分。唱歌仅适用于预置模式，歌词建议保持完整。'}}</p>
