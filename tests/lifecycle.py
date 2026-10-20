@@ -12,10 +12,11 @@ with tempfile.TemporaryDirectory(prefix='mimotts-hooks-') as temporary:
     llm=root/'etc/llm-private';llm.write_text('private-test-llm-config');llm.chmod(0o600)
     audio=root/'var/audio';audio.mkdir();(audio/'test.wav').write_bytes(b'fixture')
     samples=root/'var/samples';samples.mkdir();(samples/'test.mp3').write_bytes(b'private-sample')
+    agent=root/'var/agent';agent.mkdir();(agent/'grants.json').write_text('test-private-agent-config');agent.chmod(0o700)
     assert hook('upgrade_callback').returncode==0 and key.read_text()=='test-only-key'
     print('PASS upgrade retains configuration and assets')
     assert hook('uninstall_init').returncode==0
-    assert hook('uninstall_callback').returncode==0 and audio.exists() and samples.exists()
+    assert hook('uninstall_callback').returncode==0 and audio.exists() and samples.exists() and (agent/'grants.json').read_text()=='test-private-agent-config'
     key.unlink();llm.unlink() # Simulate fnOS removing etc on uninstall.
     assert hook('install_callback').returncode==0 and key.read_text()=='test-only-key'
     assert llm.read_text()=='private-test-llm-config' and llm.stat().st_mode & 0o777==0o600
@@ -24,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='mimotts-hooks-') as temporary:
     outside=root/'unrelated';outside.mkdir();(outside/'keep.txt').write_text('user-data')
     assert hook('uninstall_init').returncode==0
     assert hook('uninstall_callback',wizard_data_action='delete').returncode==0
-    assert not audio.exists() and not samples.exists() and not (root/'var/.retained-config').exists() and (outside/'keep.txt').exists()
+    assert not agent.exists() and not audio.exists() and not samples.exists() and not (root/'var/.retained-config').exists() and (outside/'keep.txt').exists()
     print('PASS confirmed deletion only removes owned children')
     audio.symlink_to(outside,target_is_directory=True)
     assert hook('uninstall_callback',wizard_data_action='delete').returncode!=0 and (outside/'keep.txt').exists()

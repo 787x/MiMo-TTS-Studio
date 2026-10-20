@@ -4,6 +4,12 @@
 
 本项目不是小米官方产品。不包含录音、云端训练、音色市场或 MP3 导出；MP3 仅可作为上传参考样本。后端 ASP.NET Core / .NET 10，前端 Vue 3 / TypeScript；FPK 携带 Linux x86-64 自包含运行时与纯托管 MP3 解码器，生产不需要 SDK、Node.js、ffmpeg、Docker、数据库或 NAS 声卡。
 
+## CLI / MCP / Agent（0.7.1）
+
+FPK 新增自包含 Linux x86-64 `MiMoStudio.Agent`，同一程序提供 CLI 与官方 MCP C# SDK 2.2.0 stdio。三模式 TTS/预览、长文本/标签/导演/唱歌、六类 AI 创作、共享 Jobs、样本/资产、实时 fnOS NAS 导出、服务检测和独立 Agent 默认值/预设均复用运行中的后端实例。
+
+在既有设置中由可信 fnOS 管理员明确创建授权，绑定 fnOS Owner 与操作权限；真实 Linux 包 UID + 私有连接凭据共同验证。普通 SSH 用户不能直接访问包私有 Socket，远程 MCP 需要可信 SSH 和受控包身份切换，不开放新 TCP 端口，不要求 NAS SDK。详细命令、37 项 CLI 操作/35 项 MCP 工具、Schema、退出码、授权/撤销、幂等与重启边界、SSH 配置、文件传输限制见 [CLI / MCP 文档](docs/CLI-MCP.md)，实际分层证据见 [PR7](verification/PR7.md)。
+
 ## 构建
 
 构建依赖：.NET 10 SDK、Node.js 24、npm、Python 3、Bash、官方 `fnpack 1.2.3`。从 [fnOS 开发者网站](https://developer.fnnas.com/docs/) 的开发工具页取得适合构建机的 fnpack；Linux x86-64 文件名为 `fnpack-1.2.3-linux-amd64`，赋予执行权限并加入 PATH。不要使用来源不明的同名工具。
