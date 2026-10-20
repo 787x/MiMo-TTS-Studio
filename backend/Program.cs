@@ -37,6 +37,8 @@ builder.WebHost.ConfigureKestrel(server =>
     }));
 });
 builder.Services.AddSingleton(storage);
+builder.Services.AddSingleton(FnOsDirectories.Create());
+builder.Services.AddSingleton<NasExport>();
 builder.Services.AddSingleton(new Mimo(new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(15) }) { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton<Jobs>();
 builder.Services.AddSingleton(new Llm(storage, new HttpClient(Llm.Handler()) { Timeout = Timeout.InfiniteTimeSpan }));
@@ -100,6 +102,8 @@ app.MapGet("/api/jobs", (HttpContext c, Jobs jobs) => jobs.List(Owner(c)));
 app.MapGet("/api/jobs/{id}", (HttpContext c, string id, Jobs jobs) => jobs.Get(id, Owner(c)) is { } job ? Results.Ok(job) : Results.NotFound());
 app.MapPost("/api/jobs/{id}/cancel", (HttpContext c, string id, Jobs jobs) => jobs.Cancel(id, Owner(c)) is { } job ? Results.Ok(job) : Results.NotFound());
 app.MapGet("/api/assets", (HttpContext c) => storage.List(Owner(c)));
+app.MapGet("/api/export/targets", (HttpContext c, NasExport exports) => exports.Targets(Owner(c), c.RequestAborted));
+app.MapPost("/api/assets/{id}/export", (HttpContext c, string id, ExportInput input, NasExport exports) => exports.Copy(id, Owner(c), input, c.RequestAborted));
 app.MapGet("/api/assets/{id}/audio", (HttpContext c, string id) => storage.Open(id, Owner(c)) is { } file ?
     Results.Stream(file, "audio/wav", c.Request.Query.ContainsKey("download") ? $"mimo-{id}.wav" : null, enableRangeProcessing: true) : Results.NotFound());
 app.MapPost("/api/assets/{id}/save", (HttpContext c, string id) => storage.Save(id, Owner(c)) is { } asset ? Results.Ok(asset) : Results.NotFound());

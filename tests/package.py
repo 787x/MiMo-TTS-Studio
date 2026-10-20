@@ -7,11 +7,14 @@ with tarfile.open(path,'r:gz') as outer:
     fields={k.strip():v.strip() for k,v in fields.items()}
     assert fields['platform']=='x86' and fields['appname']=='mimotts'
     assert fields['ctl_stop']=='true' and 'service_port' not in fields
+    assert fields['disable_authorization_path']=='false' and fields['micro_app']=='true'
     for name in ['main','install_init','install_callback','upgrade_init','upgrade_callback','uninstall_init','uninstall_callback']:
         member=outer.getmember('cmd/'+name);assert member.mode&0o111
         script=outer.extractfile(member).read();assert b'\r' not in script and b'/vol1' not in script
     assert json.load(outer.extractfile('config/privilege'))['defaults']['run-as']=='package'
-    json.load(outer.extractfile('config/resource'));json.load(outer.extractfile('wizard/uninstall'))
+    resources=json.load(outer.extractfile('config/resource'))
+    assert set(resources['api-scope'])=={'trim.file.sharedAccess','trim.file.userAcl'} and 'data-share' not in resources
+    json.load(outer.extractfile('wizard/uninstall'))
     with tarfile.open(fileobj=io.BytesIO(outer.extractfile('app.tgz').read()),mode='r:gz') as app:
         members={m.name.removeprefix('./'):m for m in app.getmembers()}
         def read(name):return app.extractfile(members[name]).read()

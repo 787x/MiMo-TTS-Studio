@@ -31,7 +31,21 @@ bash scripts/build.sh
 3. 点击右上角设置，输入 MiMo API Key。只显示「Key 已配置」，支持更新和清除。请使用 HTTPS 或可信本地网络访问 fnOS；应用沿用系统网关的传输安全。
 4. 编辑正文、音色与风格，可选择自然语言、导演模式或两者组合。标签工具在光标/选区前插入标签，保留选区文字、Unicode 文本元素及换行。
 5. 点击「预览最终请求」核对 user 风格和每段 assistant 正文，再点击「生成语音」。在线生成可能计费；只有这一操作创建新的 TTS 任务，不会自动重试。
-6. 完成后使用浏览器播放器播放/暂停，下载 WAV，或点击保存。试听、下载、保存均复用已生成文件。修改参数后会提示当前展示的是旧结果。
+6. 完成后使用浏览器播放器播放/暂停，下载 WAV、保存到私有音频库，或导出到已授权的 NAS 文件夹。这些操作均复用已生成文件。修改参数后会提示当前展示的是旧结果。
+
+## 导出到 NAS（0.5.1）
+
+当前结果和私有音频库的每条 WAV 均提供「导出到 NAS」。在确认面板中选择服务端列出的已授权可写目录、核对或修改文件名，再点击「确认导出 WAV 到 NAS」。默认名称只有时间戳和随机标识；同名文件明确报错，绝不覆盖。成功后显示目标目录、文件名和字节数，再次导出会生成新默认名称。浏览器「下载」保存到电脑，NAS「导出」复制到所选 NAS 目录。
+
+在支持的 fnOS 宿主内，「选择并授权文件夹」使用官方 `@trimjs/web-app` **0.5.0** 的 `pickSharedFile`；「前往 fnOS 应用设置授权目录」使用 `openAppSetting`。也可手动进入「系统设置 → 应用 → MiMo TTS Studio → 访问权限」（应用中心的应用设置也可到达），添加已有目录并设置为「读写」，返回后刷新。授权使用平台原生 ACL；不创建 `data-share`，不添加自定义用户组，不改目标目录权限。若平台要求重启，请在应用中心停止、启动后重新打开面板。
+
+NAS 导出需要官方目录开放 API（fnOS **1.2.0401+**）；实测 **1.2.0800**。保留原安装最低版本 `1.1.3100`，较旧系统或缺少宿主桥接时显示手动授权步骤；缺少后端开放 API 时导出明确不可用，既有创作/私有音频功能不依赖它。没有使用启动时 `TRIM_DATA_ACCESSIBLE_PATHS` 作为永久权限：后端通过系统 Unix Socket、服务端 `TRIM_API_TOKEN` 实时查询 `trim.file.getSharedAccessibleFolders`，并按可信网关 UID 调用 `trim.file.checkUserACL`，同时检验包用户实际写入能力。`config/resource` 仅新增 `trim.file.sharedAccess` 与 `trim.file.userAcl`，Manifest 开启目录授权及微应用桥接。
+
+仅复制当前用户的完整私有 WAV，不创建 TTS Job，不调用 MiMo，不改变 Saved、源资产或克隆样本。目录 ID 在重启后失效，需要刷新。所有接口沿用管理员、可信网关与 Origin/CSRF 校验；不接受客户端绝对路径或子目录。目录逐级用 `openat` / `O_NOFOLLOW` 打开，父目录使用 `O_PATH`，提交前重新查询授权并核对目录设备号/inode。应用无法通过软链接或相邻路径混入其他目录。
+
+复制最多 64 MiB、单槽不排队、总预算两分钟、64 KiB 有界缓冲；私有源与目标可在不同文件系统。目标使用 Linux `O_TMPFILE` 匿名暂存，长度一致并同步后以 `linkat` 原子发布完整 WAV；真实 EEXIST 保证不覆盖。取消、进程退出或复制失败会由内核回收未发布临时文件，无需扫描/清理用户目录。不支持这些语义的文件系统明确失败。如果完整文件已提交但后续目录同步失败，界面提示先核实目标文件，避免重复导出；不会尝试删除已提交文件。平台授权查询和文件提交不是跨系统事务，已完成的导出不受随后撤权影响。
+
+导出结果归用户目录管理；撤权、删除私有源资产、停止或卸载应用均不会清理它们。升级不迁移历史数据。验证及平台限制见 [PR5](verification/PR5.md)。
 
 可用预置 Voice ID：`mimo_default`、`冰糖`、`茉莉`、`苏打`、`白桦`、`Mia`、`Chloe`、`Milo`、`Dean`。默认音色随 MiMo 集群变化。自然语言与导演内容进入可选 `user` 消息，正文及标签进入 `assistant`；请求为官方 `/v1/chat/completions` 的非流式 WAV 协议。整体标签按每段重复前缀，唱歌显式添加 `(唱歌)`。这些都在请求预览显示；不暗中添加语速或改写正文。参考 [MiMo 官方接口文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)。
 
@@ -123,8 +137,11 @@ sudo python3 tests/production_gateway.py artifacts/fpk/app/server/MiMoStudio
 node --test frontend/tests/polling.test.mjs
 python3 tests/theme_styles.py
 npm --prefix frontend exec -- vitest run --root frontend --environment happy-dom tests/creative.test.js tests/diagnostics.test.js
+npm --prefix frontend exec -- vitest run --root frontend --environment happy-dom tests/nas-export.test.js
 python3 tests/package.py
 ```
+
+NAS 文件系统负例在独立 Linux / WSL 测试机以 root 执行 `bash tests/nas_filesystems.sh`：脚本拒绝已有 `/vol98765`，在自己创建的目录挂载两个临时 tmpfs，再以非 root 身份运行测试，覆盖跨文件系统复制和真实 ENOSPC，退出时卸载并清理自身测试目录。**不要在真实 NAS 上运行该受控挂载测试**；真实 fnOS ACL 需在平台应用设置与文件管理器中验收。
 
 实机验收：先安装 FPK，然后把 `tests/fnos_acceptance.py` 复制到指定 fnOS 测试机，以 root 执行。它通过真实私有 Socket 检查权限、范围请求、文件复用与 appcenter 启停，仅创建并清理有明确标签的合成静音测试文件，不调用 MiMo、不更改已有 Key。完整的浏览器登录、桌面 iframe、非管理员会话和在线合成仍应另外验证。
 

@@ -1,5 +1,5 @@
 appname=mimotts
-version=0.4.3
+version=0.5.1
 display_name=MiMo TTS Studio
 desc=管理员专用 MiMo 语音创作工作台：预置音色、导演与标签、浏览器试听和私有音频库。在线生成可能计费。
 platform=x86
@@ -11,4 +11,5 @@ desktop_applaunchname=mimotts.main
 os_min_version=1.1.3100
 ctl_stop=true
 checkport=false
-disable_authorization_path=true
+disable_authorization_path=false
+micro_app=true
