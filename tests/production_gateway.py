@@ -48,6 +48,15 @@ try:
     check(request('/',identity=False)[0]==403,'UI requires admin')
     check(request('/api/preview','POST',{'text':'你好'})[0]==403,'write without CSRF denied')
     writes={'Origin':'http://nas.test:5666','Referer':'http://nas.test:5666/app/mimotts/','X-Studio-CSRF':session['csrf']}
+    export_path='/api/assets/'+'0'*32+'/export'
+    export_data={'directoryId':'not-a-path','fileName':'test.wav'}
+    check(request('/api/export/targets',identity=False)[0]==403,'export directory list requires trusted administrator')
+    check(request(export_path,'POST',export_data,writes,identity=False)[0]==403,'NAS export requires trusted administrator')
+    check(request(export_path,'POST',export_data)[0]==403,'NAS export requires CSRF')
+    check(request(export_path,'POST',export_data,{**writes,'Origin':'http://evil.test'})[0]==403,'NAS export requires same Origin')
+    check(request(export_path,'POST',{'directoryId':'x','fileName':'x'*140000},writes)[0] in (400,413),'NAS export retains 128 KiB body limit')
+    check(request(export_path,'POST',export_data,writes)[0]==400,'missing or unowned export asset rejected without platform query or TTS')
+    check(request('/api/export/targets')[0]==400,'missing live platform authority fails closed instead of using environment paths')
     check(request('/api/preview','POST',{'text':'你好'},writes)[0]==200,'gateway Origin port compatibility')
     for path,data in [('/api/diagnostics/check',{'service':'preset'}),('/api/diagnostics/run',{'service':'preset','id':'0'*32}),('/api/diagnostics/'+'0'*32+'/cancel',None)]:
         check(request(path,'POST',data,headers=writes,identity=False)[0]==403,'diagnostic endpoint admin protection '+path)

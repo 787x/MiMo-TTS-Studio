@@ -9,3 +9,5 @@ input::placeholder,textarea::placeholder{color:var(--placeholder,#757575)}
 :root[data-theme="dark"]{--placeholder:#a4b4a7;scrollbar-color:#526b58 #202c27}
 
 .settings-key-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}.settings-key-actions .probe-button{font-size:12px;padding:7px 10px}
+
+.nas-overlay{position:fixed;inset:0;z-index:1000;background:var(--shadow-card);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:20px}.nas-panel{width:min(620px,100%);max-height:90vh;overflow:auto;box-shadow:0 12px 48px var(--shadow-tab)}.nas-panel .section-title h2{font-size:18px}.nas-tools{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}.nas-tools button{font-size:11px}.nas-panel label{display:block;margin-top:16px}.nas-destination{overflow-wrap:anywhere;line-height:1.8;font-size:12px;color:var(--label)}.nas-panel .alert,.nas-panel .notice{overflow-wrap:anywhere;margin:12px 0}.result-actions{flex-wrap:wrap}

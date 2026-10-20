@@ -99,6 +99,7 @@ ctx.Request.Headers.Origin="http://nas.test:1234";Check(!Gateway.SafeOrigin(ctx.
 await Pr2Tests.Run(Check, Reject);
 await Pr3Tests.Run(Check, Reject);
 await Pr4Tests.Run(Check);
+await Pr5Tests.Run(Check);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler
