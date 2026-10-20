@@ -22,6 +22,28 @@ public static partial class Composition
         "preset" => "mimo-v2.5-tts", "design" => "mimo-v2.5-tts-voicedesign",
         "clone" => "mimo-v2.5-tts-voiceclone", _ => throw new InputError("无效的合成模式。")
     };
+    // Preserve the free-form string verbatim; this is a safety boundary, not a preset whitelist.
+    public static void ValidateTags(string tags)
+    {
+        if (tags.Length > 200 || tags.IndexOfAny(['(', ')', '[', ']', '（', '）', '【', '】']) >= 0)
+            throw new InputError("整体标签最多 200 个 UTF-16 字符，不可包含括号。");
+        for (int i = 0; i < tags.Length; i++)
+        {
+            if (char.IsHighSurrogate(tags[i]))
+            {
+                if (i + 1 >= tags.Length || !char.IsLowSurrogate(tags[i + 1]))
+                    throw new InputError("整体标签包含无效 Unicode。");
+                i++;
+            }
+            else if (char.IsLowSurrogate(tags[i])) throw new InputError("整体标签包含无效 Unicode。");
+        }
+        foreach (var rune in tags.EnumerateRunes())
+            if (Rune.GetUnicodeCategory(rune) is UnicodeCategory.Control or UnicodeCategory.Format ||
+                Rune.IsWhiteSpace(rune) && rune.Value != ' ')
+                throw new InputError("整体标签不可包含换行、控制字符或隐藏格式字符。");
+        if (tags.Split(' ').Any(t => t == "唱歌" || t.Equals("sing", StringComparison.OrdinalIgnoreCase) || t.Equals("singing", StringComparison.OrdinalIgnoreCase)))
+            throw new InputError("唱歌、sing、singing 请使用预置音色的独立唱歌开关。");
+    }
     public static ScriptPlan Plan(ScriptRequest r)
     {
         _ = Model(r.SynthesisMode);
@@ -41,8 +63,7 @@ public static partial class Composition
         if (!Voices.Contains(r.Voice) || r.Mode is not ("natural" or "director" or "combined"))
             throw new InputError("音色或风格模式无效。");
         if (r.SegmentCharacters is < 50 or > 3000) throw new InputError("分段目标必须为 50–3000 个文本元素。");
-        if (r.Tags.Length > 200 || r.Tags.IndexOfAny(['(', ')', '[', ']', '（', '）', '\r', '\n']) >= 0)
-            throw new InputError("整体标签最多 200 字，直接填写名称，不包含括号或换行。");
+        ValidateTags(r.Tags);
         var director = string.Join("\n", new[] { ("角色", r.Character), ("场景", r.Scene), ("指导", r.Direction) }
             .Where(x => x.Item2.Length > 0).Select(x => x.Item1 + "：" + x.Item2));
         var user = r.Mode switch { "director" => director, "combined" => string.Join("\n", new[] { r.Style, director }.Where(x => x.Length > 0)), _ => r.Style };

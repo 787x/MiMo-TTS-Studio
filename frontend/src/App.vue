@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import StylePicker from "./StylePicker.vue"
+import type {StyleState} from "./styles"
 import ProbeButton from "./ProbeButton.vue"
 import NasExport from './NasExport.vue'
 import Diagnostics from "./Diagnostics.vue"
@@ -24,6 +26,14 @@ const selectedMode=ref<SynthesisMode>('preset')
 const draft=(synthesisMode:SynthesisMode)=>({text:synthesisMode==='design'?'你好，很高兴在这里与你相遇。愿这段声音，陪你开启新的故事。':'欢迎来到 MiMo 语音创作台。\n让文字拥有声音，让每一次表达都被听见。',voice:'mimo_default',style:'',mode:'natural',character:'',scene:'',direction:'',tags:'',singing:false,split:true,segmentCharacters:3000,synthesisMode,voiceDescription:'',sourceSampleId:null as string|null})
 const drafts=reactive({preset:draft('preset'),design:draft('design'),clone:draft('clone')})
 const form=computed(()=>drafts[selectedMode.value])
+const styleStates=reactive<Record<string,StyleState>>({preset:{manual:'',selected:[]},clone:{manual:'',selected:[]}})
+async function validateStyles(tags:string,singing:boolean){
+ const before=fingerprint()
+ // Composition-only endpoint: validate the text budget without requiring a selected clone sample.
+ const f=form.value
+ await api('/preview','POST',{text:f.text.trim()?f.text:'校验',tags,singing,split:f.split,segmentCharacters:f.segmentCharacters})
+ if(before!==fingerprint())throw new Error('草稿已更改，请重新添加风格。')
+}
 const voices=ref<string[]>([]), configured=ref(false), csrf=ref(''), key=ref(''), error=ref(''), notice=ref(''), loading=ref(true)
 const assets=ref<Asset[]>([]), samples=ref<VoiceSample[]>([]), job=ref<Job|null>(null), preview=ref<Plan|null>(null), previewSnapshot=ref(''), newSampleName=ref(''), converting=ref(false)
 const results=reactive<Record<SynthesisMode,{id:string;snapshot:string}>>({preset:{id:'',snapshot:''},design:{id:'',snapshot:''},clone:{id:'',snapshot:''}})
@@ -112,6 +122,7 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     </div>
     <div class="editor"><div v-if="selectedMode!=='design'" class="toolbar"><span>插入标签</span><button v-for="tag in labels" :key="tag" class="tag" @mousedown.prevent @click="insert(tag)">{{tag}}</button></div><textarea ref="editor" v-model="form.text" class="script" aria-label="多行语音脚本" spellcheck="false" placeholder="写下你想听见的文字，或在光标处插入句内标签…"></textarea><div class="editor-foot">{{selectedMode==='design'?'试音正文 · 原文提交':'TEXT → VOICE'}} <span>支持中文 / English</span></div></div>
     <div v-if="selectedMode!=='design'" class="controls"><label v-if="selectedMode==='preset'">预置音色<select v-model="form.voice"><option v-for="v in voices" :key="v" :value="v">{{v==='mimo_default'?'MiMo 默认（随集群变化）':v}}</option></select></label><label>整体风格标签<input v-model="form.tags" placeholder="例如：温柔 清亮" maxlength="200"></label></div>
+    <StylePicker v-if="selectedMode!=='design'" :key="selectedMode" :tags="form.tags" :singing="form.singing" :mode="selectedMode" :state="styleStates[selectedMode]!" :validate="validateStyles" @change="(tags,singing)=>{form.tags=tags;form.singing=singing}"/>
     <div class="tabs" role="group" aria-label="风格模式"><button v-for="m in [{id:'natural',name:'自然语言'},{id:'director',name:'导演模式'},{id:'combined',name:'组合指导'}]" :key="m.id" :class="{active:form.mode===m.id}" @click="form.mode=m.id">{{m.name}}</button></div>
     <AiTool v-if="form.mode!=='director'" :key="selectedMode+'style'" :draft="form" :api="api" task="style" label="AI 完善自然语言风格" @apply="Object.assign(form,$event)"/>
     <label v-if="form.mode!=='director'">自然语言风格说明<textarea v-model="form.style" rows="2" placeholder="用轻快明亮的语气朗读，语速舒缓，带着笑意。"></textarea></label>

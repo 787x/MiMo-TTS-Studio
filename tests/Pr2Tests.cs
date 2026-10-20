@@ -61,7 +61,7 @@ static class Pr2Tests
             check(storage.GetSample("../audio", "1000") == null && !storage.DeleteSample(sample.Id, "1001"), "sample traversal and cross-user deletion denied");
             check(storage.RenameSample(sample.Id, "1000", "新的名称")?.Name == "新的名称", "sample rename");
             reject(() => storage.RenameSample(sample.Id, "1000", "\nname"), "sample name validation");
-            var clone = new ScriptRequest(new string('甲', 55) + "。" + new string('乙', 55), Style: "平静", Tags: "温柔", SegmentCharacters: 50, SynthesisMode: "clone", SourceSampleId: sample.Id);
+            var clone = new ScriptRequest(new string('甲', 55) + "。" + new string('乙', 55), Style: "平静", Tags: "温柔 清亮 上海话", SegmentCharacters: 50, SynthesisMode: "clone", SourceSampleId: sample.Id);
             var clonePlan = Composition.Plan(clone);
             var snapshot = storage.SnapshotSample(sample.Id, "1000");
             var clonePayload = JsonSerializer.SerializeToElement(Mimo.Payload(clone, clonePlan, clonePlan.Segments[0], snapshot.DataUrl));
@@ -83,7 +83,9 @@ static class Pr2Tests
             handler.Resume.TrySetResult();
             var done = await Finish(jobs, job.Id);
             check(done is { State: "succeeded", SynthesisMode: "clone", AssetId: not null } && handler.Payloads.Count == clonePlan.Segments.Length, "all clone segments finish after source deletion");
+            check(handler.Payloads.Select(p => p.GetProperty("messages")[1].GetProperty("content").GetString()).SequenceEqual(clonePlan.Assistant), "PR6 clone controlled HTTP matches each preview segment");
             check(handler.Payloads.All(p => p.GetProperty("audio").GetProperty("voice").GetString() == snapshot.DataUrl), "all segments use one immutable reference snapshot");
+            check(done.Parameters?.Prefix == "(温柔 清亮 上海话)" && storage.Get(done.AssetId!, "1000")?.Parameters?.Prefix == clonePlan.Prefix, "PR6 clone Job and stored summary match preview prefix");
             check(done.Parameters?.SourceSampleName == "新的名称" && storage.Get(done.AssetId!, "1000") is { SynthesisMode: "clone", SourceSampleId: not null }, "safe job and asset summary preserve original source parameters");
             string safe = JsonSerializer.Serialize(done);
             check(!safe.Contains("base64") && !safe.Contains("test-only-private-key"), "task response never contains reference Data URL or Key");
