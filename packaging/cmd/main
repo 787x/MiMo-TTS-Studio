@@ -54,7 +54,7 @@ stop)
         for i in $(seq 1 100); do alive || break; sleep 0.1; done
         if alive; then kill -KILL "$app_pid"; fi
     fi
-    rm -f "$pidfile" "$socket"
+    rm -f "$pidfile" "$socket" "${TRIM_APPDEST}/agent.sock"
     # Only this app's designated temporary file names.
     find "${TRIM_PKGTMP}/mimotts-work" -maxdepth 1 -type f -name '*.partial' -delete
     ;;

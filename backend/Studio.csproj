@@ -14,4 +14,7 @@
     <Content Remove=".dev/**;wwwroot/**" />
     <None Remove=".dev/**" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\agent-shared\Agent.Shared.csproj" />
+  </ItemGroup>
 </Project>

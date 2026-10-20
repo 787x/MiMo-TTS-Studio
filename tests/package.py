@@ -20,6 +20,9 @@ with tarfile.open(path,'r:gz') as outer:
         def read(name):return app.extractfile(members[name]).read()
         config=json.loads(read('ui/config'))['.url']['mimotts.main']
         assert config['gatewayPrefix']=='/app/mimotts' and config['gatewaySocket']=='app.sock' and not config['allUsers']
+        assert read('agent/MiMoStudio.Agent')[:4]==b'\x7fELF' and members['agent/MiMoStudio.Agent'].mode&0o111
+        assert 'agent/libcoreclr.so' in members and 'agent/ModelContextProtocol.dll' in members and 'agent/Agent.Shared.dll' in members
+        assert any('ModelContextProtocol' in n and n.endswith('.LICENSE') for n in members)
         assert read('server/MiMoStudio')[:4]==b'\x7fELF'
         assert members['server/MiMoStudio'].mode&0o111
         assert 'server/libcoreclr.so' in members and 'server/wwwroot/index.html' in members

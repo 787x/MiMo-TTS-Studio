@@ -43,6 +43,9 @@ builder.Services.AddSingleton(new Mimo(new HttpClient(new SocketsHttpHandler { A
 builder.Services.AddSingleton<Jobs>();
 builder.Services.AddSingleton(new Llm(storage, new HttpClient(Llm.Handler()) { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton<Diagnostics>();
+builder.Services.AddSingleton(new AgentStore(Path.Combine(root, "agent")));
+builder.Services.AddSingleton<AgentExecution>();
+builder.Services.AddHostedService<AgentIpc>();
 var app = builder.Build();
 string csrf = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 app.Use(async (context, next) =>
@@ -85,6 +88,9 @@ string Owner(HttpContext c) => c.Request.Headers["X-Trim-Userid"].ToString();
 app.MapPost("/api/diagnostics/check", (DiagnosticInput input, HttpContext c, Diagnostics diagnostics) => diagnostics.Check(input,Owner(c)));
 app.MapPost("/api/diagnostics/run", (DiagnosticInput input, HttpContext c, Diagnostics diagnostics) => diagnostics.Run(input,Owner(c),c.RequestAborted));
 app.MapPost("/api/diagnostics/{id}/cancel", async (string id, HttpContext c, Diagnostics diagnostics) => Results.Ok(new { canceled=await diagnostics.CancelAndWait(id,Owner(c)) }));
+app.MapGet("/api/agents", (HttpContext c, AgentStore agents) => agents.List(Owner(c)));
+app.MapPost("/api/agents", (HttpContext c, AgentGrantInput input, AgentStore agents) => agents.Create(Owner(c), input));
+app.MapDelete("/api/agents/{id}", (HttpContext c, string id, AgentStore agents) => agents.Revoke(Owner(c), id) ? Results.NoContent() : Results.NotFound());
 app.MapGet("/api/llm", () => storage.LlmStatus());
 app.MapPut("/api/llm", (LlmUpdate update) => { storage.SetLlm(update); return storage.LlmStatus(); });
 app.MapPost("/api/creative", (CreativeRequest request, Llm llm, HttpContext context) => llm.Generate(request, context.RequestAborted));

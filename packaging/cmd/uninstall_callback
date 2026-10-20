@@ -8,7 +8,7 @@ delete)
     # Delete only known, application-owned children. Never remove a TRIM root,
     # follow a symlink, or touch a shared/user-selected folder.
     data_root=$(realpath -e "$TRIM_PKGVAR")
-    for name in audio samples .retained-config; do
+    for name in audio samples agent .retained-config; do
         child="$data_root/$name"
         [ ! -L "$child" ] || exit 1
         if [ -d "$child" ]; then

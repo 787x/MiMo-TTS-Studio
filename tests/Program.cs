@@ -103,6 +103,7 @@ await Pr3Tests.Run(Check, Reject);
 await Pr4Tests.Run(Check);
 await Pr5Tests.Run(Check);
 Pr6Tests.Run(Check, Reject);
+await Pr7Tests.Run(Check);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler

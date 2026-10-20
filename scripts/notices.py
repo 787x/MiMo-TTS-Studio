@@ -17,12 +17,16 @@ for framework in assets['project']['frameworks'].values():
             if file.name.lower().startswith(('license','third-party-notice')):shutil.copy2(file,target/file.name)
         runtime_count+=1
 assert runtime_count==2, 'Missing .NET redistribution notices'
-for name,entry in assets['libraries'].items():
+agent_assets=json.loads((repo/'agent/obj/project.assets.json').read_text())
+libraries={**assets['libraries'],**agent_assets['libraries']}
+for name,entry in libraries.items():
     if entry.get('type')!='package':continue
     source=cache/entry['path']
     target=output/name.replace('/','-');target.mkdir(exist_ok=True)
     licenses=[file for file in source.iterdir() if file.is_file() and file.name.lower().startswith(('license','third-party-notice'))]
     if not licenses and name=='NLayer/3.0.0':licenses=[repo/'third_party/NLayer.LICENSE']
+    if not licenses and name=='Microsoft.Extensions.AI.Abstractions/10.8.3':licenses=[repo/'third_party/Microsoft.Extensions.AI.Abstractions.LICENSE']
+    if not licenses and name in ('ModelContextProtocol/2.2.0','ModelContextProtocol.Core/2.2.0'):licenses=[repo/'third_party/ModelContextProtocol.LICENSE',repo/'third_party/ModelContextProtocol.NOTICES']
     assert licenses, 'Missing dependency license: '+name
     for file in licenses:shutil.copy2(file,target/file.name)
 lock=json.loads((repo/'frontend/package-lock.json').read_text())

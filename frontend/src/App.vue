@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AgentSettings from "./AgentSettings.vue"
 import StylePicker from "./StylePicker.vue"
 import type {StyleState} from "./styles"
 import ProbeButton from "./ProbeButton.vue"
@@ -106,6 +107,7 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
   <section class="intro"><div><span class="eyebrow">VOICE WORKSPACE / 02</span><h1>让文字，拥有表达。</h1><p>从一句问候到一段故事，编排属于你的声音。</p></div><span class="badge">{{modeLabels[selectedMode]}} · MiMo V2.5</span></section>
   <div v-if="error" class="alert" role="alert">{{error}}</div><div v-if="notice" class="notice" role="status">{{notice}}</div>
   <section v-if="showSettings" class="settings card"><div><div class="settings-title"><h2>服务端 API Key</h2><div class="settings-key-actions"><ProbeButton service="MiMo" :state="diagnosticState.states.preset?.state" :message="diagnosticState.states.preset?.message" :busy="diagnosticState.busy" :disabled="!!key||working" @probe="diagnostics?.run('preset')"/><a class="button quiet" href="https://platform.xiaomimimo.com/console/api-keys" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">获取 / 管理 API Key ↗</a></div></div><p>Key 保存在 NAS 应用私有目录，仅显示配置状态。文件权限保护，不是加密。</p></div><form @submit.prevent="configure()"><input type="password" v-model="key" autocomplete="new-password" placeholder="输入新的 MiMo API Key" maxlength="512" aria-label="MiMo API Key"><button :disabled="!key||working">更新 Key</button><button type="button" class="quiet danger" :disabled="!configured||working" @click="configure(true)">清除</button></form></section>
+  <AgentSettings v-if="showSettings" :api="api" />
   <AiSettings v-if="showSettings" :api="api" :tts-dirty="!!key||working" :probe-state="diagnosticState.states.llm" :probe-busy="diagnosticState.busy" @probe="diagnostics?.run('llm')" @dirty="llmDirty=$event"/>
   <Diagnostics ref="diagnostics" v-if="showSettings" @change="diagnosticState=$event" :api="api" :samples="samples" :tts-dirty="!!key||working" :llm-dirty="llmDirty"/>
   <div v-if="loading" class="card">正在连接创作工作台…</div>
