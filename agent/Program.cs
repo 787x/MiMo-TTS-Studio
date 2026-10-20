@@ -17,7 +17,7 @@ try
     if(options.Tool=="mcp")
     {
         var builder=Host.CreateApplicationBuilder();builder.Logging.ClearProviders();
-        builder.Services.AddMcpServer(o=>o.ServerInfo=new(){Name="MiMoStudio.Agent",Version="0.7.1"})
+        builder.Services.AddMcpServer(o=>o.ServerInfo=new(){Name="MiMoStudio.Agent",Version="0.7.2"})
             .WithStreamServerTransport(new BoundedInput(Console.OpenStandardInput()),Console.OpenStandardOutput())
             .WithListToolsHandler(async (_,ct)=>
             {

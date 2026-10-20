@@ -7,7 +7,7 @@ public sealed record CliArguments(string Tool,JsonElement Arguments,string Socke
 public static class Cli
 {
     public const string Help="""
-MiMoStudio.Agent 0.7.1 — CLI / MCP stdio for the running NAS backend
+MiMoStudio.Agent 0.7.2 — CLI / MCP stdio for the running NAS backend
 Usage: MiMoStudio.Agent <tool> [options]
        MiMoStudio.Agent mcp --credential-file <private-file>
        MiMoStudio.Agent --help
