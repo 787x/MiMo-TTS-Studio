@@ -171,6 +171,6 @@ PR2 的样本验收可将 `tests/fnos_pr2.py` 和 `tests/fixtures/tone.mp3` 复�
 
 ## 来源与许可
 
-本仓库源代码为独立实现，MIT 授权。只读查阅了 SeleVox 的 `docs/MiMoTTS.md` 及 PR6 指定的风格选择器和测试作为行为参考；分类名称和短标签词汇用于相同功能的浏览辅助。Vue 交互和后端安全检查独立实现，没有复制其 GPL 源代码、界面资源、密钥或用户文件，也没有构建依赖。协议以小米官方文档为依据；FPK 结构依据官方 fnpack 模板、[fnOS 网关文档](https://developer.fnnas.com/docs/core-concepts/gateway-registration/) 及其 [公开文档镜像](https://github.com/ckcoding/fnnas-docs)。打包时收集确切 .NET 运行时和前端依赖的第三方许可到 `server/licenses/`；不要移除后再分发。
+本仓库源代码为独立实现，采用 GNU GPL v3 许可，详见 [LICENSE](LICENSE)。只读查阅了 [SeleVox](https://github.com/787x/SeleVox) 的 [docs/MiMoTTS.md](https://github.com/787x/SeleVox/blob/main/docs/MiMoTTS.md) 及 PR6 指定的风格选择器和测试作为行为参考；分类名称和短标签词汇用于相同功能的浏览辅助。Vue 交互和后端安全检查独立实现。协议以小米官方文档为依据；FPK 结构依据官方 fnpack 模板、[fnOS 网关文档](https://developer.fnnas.com/docs/core-concepts/gateway-registration/) 及其 [公开文档镜像](https://github.com/ckcoding/fnnas-docs)。打包时收集确切 .NET 运行时和前端依赖的第三方许可到 `server/licenses/`；不要移除后再分发。
 
 MP3 解码依赖 [NLayer 3.0.0](https://github.com/naudio/NLayer/tree/v3.0.0)，MIT 许可与上游版权保留在 `third_party/NLayer.LICENSE`，构建时随 FPK 分发；不引入 NAudio 或 Windows 播放依赖。测试中的 MP3 为原创正弦波，不是真实个人声音。
