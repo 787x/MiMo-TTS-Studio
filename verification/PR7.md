@@ -94,3 +94,44 @@ python3 tests/package.py
 未做真实卸载/重装、断电/磁盘满/恶意宿主内核或最小系统版本测试；卸载保留/确认删除在隔离生命周期测试覆盖。唱歌请求形状及标签规则有受控HTTP/Composition证据，本次没有再次真实合成唱歌音频，也没有主观听感/克隆相似度评价。NAS目录撤权/文件系统负例复用原PR5实现和原测试证据，本次实机重跑了同名拒绝与原目录授权保留，没有改动现有授权目录。
 
 同包UID完全被控制不在隔离保证内；远程身份切换是部署前提。幂等/Job历史重启边界明确，不提供跨重启计费事务或远程MCP任意文件传输。
+
+## 2026-10-20 追加修复 — IPC 超时反馈与检测结果语义
+
+修复提交：`f1560b1077d63d8786e92bbf011d5e9540d05940`，基于 PR7 审查提交 `811ca095`。本节为本次源码修复证据；上文 FPK 0.7.1、fnOS/SSH/真实云端验收属于原历史提交，不作为本次新提交的实测结果。
+
+实际修改：
+
+- IPC 在首次尝试写帧前记录响应已开始；只有未尝试写入、没有已知读端断连且应用未停止时，才用独立的 **2秒**发送预算尽力返回安全错误。操作预算已取消时映射为 timeout，不再复用该取消Token写错误帧。部分帧、写失败、下载响应已开始都不追加第二帧。独立预算仍响应应用停止；业务执行不会延时、重启或重试。
+- `probe_service` 仅对 succeeded 返回 success=true/code=ok；failed→probe_failed（退出6）、expired→probe_expired（退出6）、canceled→canceled（退出7）。四种状态都保留原安全诊断详情；现有 MCP 的 isError=!success 自然对应。离线预检查仍可在 ready=false 时成功返回，不代表服务在线。
+- 未修改 Diagnostics、Mimo/LLM/WAV、Jobs、授权/UID/Socket权限、公开工具Schema/scope、CLI客户端/MCP生产处理或fnOS打包/生命周期。增加内部测试可见性与预算覆盖点，只用于缩短受控回归的等待；生产操作预算仍是4分钟，无新环境变量或输入参数。
+
+本次实际执行结果：
+
+| 验证层 | 结果 |
+| --- | --- |
+| Windows .NET Release | 最终 **347项**检查通过，含新增26项反馈检查及原授权/撤销、Job取消、幂等与不重复提交回归。 |
+| Linux/WSL .NET Release（nobody） | 最终 **353项**检查通过；包括26项反馈检查及新增3项真实UDS检查。实际操作预算在可通信Socket中到期，AgentClient收到完整 timeout/退出7，而非 service_unavailable；客户端提前断开后worker可复用，运行中应用停止可有界退出并清理Socket。 |
+| 帧/发送单元回归 | 已取消业务Token仍能发送且仅发送一个完整错误帧；头/正文写失败不追加帧；已知断开不尝试响应；不可写流在独立短预算内退出；应用已停止或发送中停止均及时释放；业务存储IO错误保持原安全错误语义。 |
+| 受控 Diagnostics | 使用未改动的 Diagnostics.Run/AgentExecution，分别运行合法模拟WAV成功、受控401失败、缺Key过期、已取消Token四种状态；校验success/code/退出码、state/category/reason/elapsedMs/configuration。失败保留诊断详情且隐藏Key/原始上游哨兵/音频；成功/失败各一次受控上游请求，过期/预取消无上游请求，无重试。 |
+| 实际 CLI + 官方 MCP 客户端 | `agent_feedback.py` 使用上述实际执行产生的诊断JSON作为受控IPC响应，真实启动Linux自包含CLI和SDK stdio进程。四状态CLI退出码0/6/6/7；官方McpClient的structuredContent与文本结果均逐字段一致，isError=false/true/true/true；两端离线check未就绪仍非错误。每次probe仅一条IPC请求，无云端调用。 |
+| 原真实 IPC / MCP 回归 | 新源码Linux自包含发布运行 `agent_ipc.py`，原 **60项**通过，包括真实UID/归属/撤权、CLI/MCP相同Composition、35工具发现与帧、文件边界及Socket清理。原 `cli_wait.py` 仍通过：等待超时退出7、不发送取消或重新提交。 |
+
+使用独立、忽略提交的 `.dev/pr7-feedback-publish` 发布目录，没有覆盖历史 FPK 产物。后端和Agent的Linux self-contained Release publish成功。Linux测试构建有原 `tests/Pr7Tests.cs:54` 的CA2022分析器警告（旧的BoundedInput上限测试读取写法），0错误；本次未修改该既有测试。
+
+复现（.NET共享obj按环境串行，不同时构建）：
+
+```bash
+# Windows亦可运行第一项；Linux以下测试以非root执行：
+dotnet run --project tests/Studio.Tests.csproj -c Release
+
+dotnet publish backend/Studio.csproj -c Release -r linux-x64 --self-contained true -o .dev/pr7-feedback-publish/app/server -p:DebugType=None -p:DebugSymbols=false
+dotnet publish agent/MiMoStudio.Agent.csproj -c Release -r linux-x64 --self-contained true -o .dev/pr7-feedback-publish/app/agent -p:DebugType=None -p:DebugSymbols=false
+dotnet build tests/Studio.Tests.csproj -c Release
+dotnet build mcp-tests/McpSmoke.csproj -c Release
+sudo -u nobody dotnet tests/bin/Release/net10.0/Studio.Tests.dll --feedback-fixtures .dev/pr7-feedback-linux.json
+sudo -u nobody python3 tests/agent_feedback.py .dev/pr7-feedback-publish/app/agent/MiMoStudio.Agent .dev/pr7-feedback-linux.json mcp-tests/bin/Release/net10.0/McpSmoke.dll
+sudo python3 tests/agent_ipc.py .dev/pr7-feedback-publish/app
+sudo -u nobody python3 tests/cli_wait.py .dev/pr7-feedback-publish/app/agent/MiMoStudio.Agent
+```
+
+本次**未重新打包FPK、部署真实fnOS、运行SSH或真实MiMo/LLM检测**；未声称验证了上述历史设备/产物对应的新源码。真实断连、应用停止或已经部分写入时仍可观察连接关闭，无法保证一定送达错误帧；这时不会强行追加响应或延长/重发业务请求。
