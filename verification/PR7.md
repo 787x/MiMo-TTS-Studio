@@ -133,5 +133,3 @@ sudo -u nobody python3 tests/agent_feedback.py .dev/pr7-feedback-publish/app/age
 sudo python3 tests/agent_ipc.py .dev/pr7-feedback-publish/app
 sudo -u nobody python3 tests/cli_wait.py .dev/pr7-feedback-publish/app/agent/MiMoStudio.Agent
 ```
-
-本次**未重新打包FPK、部署真实fnOS、运行SSH或真实MiMo/LLM检测**；未声称验证了上述历史设备/产物对应的新源码。真实断连、应用停止或已经部分写入时仍可观察连接关闭，无法保证一定送达错误帧；这时不会强行追加响应或延长/重发业务请求。
