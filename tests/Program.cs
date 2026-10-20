@@ -52,7 +52,7 @@ try
  Check(reopened.List("1000").Length==1 && reopened.ReadKey()!=null, "saved assets and Key persist across restart");
  var handler=new MockMimo(wave);
  var mimo=new Mimo(new HttpClient(handler));
- var shortRequest=new ScriptRequest(new string('a',51)+"。"+new string('b',51),SegmentCharacters:50);
+ var shortRequest=new ScriptRequest(new string('a',51)+"。"+new string('b',51),SegmentCharacters:50,Tags:"温柔 清亮 上海话");
  var shortPlan=Composition.Plan(shortRequest);
  var pcm=await mimo.Generate(storage.ReadKey()!,request,plan,plan.Segments[0],default);
  Check(pcm.Rate==24000 && handler.Calls==1 && handler.Requests[0].Contains("assistant"), "controlled HTTP returns validated WAV");
@@ -70,6 +70,8 @@ try
  while(jobs.Get(j.Id,"1000")!.State=="running")await Task.Delay(5);
  var done=jobs.Get(j.Id,"1000")!;
  Check(done.State=="succeeded"&&done.Completed==shortPlan.Segments.Length,"multi-segment task succeeds");
+ Check(storage.Get(done.AssetId!,"1000")!.Parameters!.Prefix==shortPlan.Prefix,"PR6 committed summary matches Composition prefix");
+ Check(handler.Requests.TakeLast(shortPlan.Segments.Length).Select(raw=>JsonSerializer.Deserialize<JsonElement>(raw).GetProperty("messages")[0].GetProperty("content").GetString()).SequenceEqual(shortPlan.Assistant),"PR6 controlled HTTP matches each preview segment exactly");
  int calls=handler.Calls;
  for(int n=0;n<3;n++){using var f=storage.Open(done.AssetId!,"1000");Check(f?.Length>44,"reused audio read "+n);}
  storage.Save(done.AssetId!,"1000");Check(handler.Calls==calls,"play download save cause zero additional MiMo calls");
@@ -100,6 +102,7 @@ await Pr2Tests.Run(Check, Reject);
 await Pr3Tests.Run(Check, Reject);
 await Pr4Tests.Run(Check);
 await Pr5Tests.Run(Check);
+Pr6Tests.Run(Check, Reject);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler
