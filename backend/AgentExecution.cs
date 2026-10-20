@@ -80,13 +80,17 @@ public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics
             case "export_audio_to_nas":
                 var receipt=await exports.Copy(Str(a,"id"),owner,new(Str(a,"directoryId"),Str(a,"fileName")),ct);
                 return AgentReply.Ok(new{receipt.FileName,receipt.Bytes});
-            case "probe_service":var input=Diagnostic(a);var check=diagnostics.Check(input,owner);return AgentReply.Ok(await diagnostics.Run(input with{Revision=check.Revision,Id=Guid.NewGuid().ToString("N")},owner,ct));
+            case "probe_service":
+                var input=Diagnostic(a);var check=diagnostics.Check(input,owner);
+                return ProbeReply(await diagnostics.Run(input with{Revision=check.Revision,Id=Guid.NewGuid().ToString("N")},owner,ct));
             default:
                 if(a.TryGetProperty("requestId",out _))throw new ArgumentException();
                 string task=request.Tool switch{"generate_voice_description"=>"description","generate_style_instruction"=>"style","generate_director_plan"=>"director","generate_script"=>"script","generate_lyrics"=>"lyrics","annotate_inline_tags"=>"tags",_=>throw new ArgumentException()};
                 return AgentReply.Ok(await llm.Generate(new(task,AgentStore.Resolve(grant,a)),ct));
         }
     }
+    internal static AgentReply ProbeReply(DiagnosticResult result)=>result.State=="succeeded"?AgentReply.Ok(result):
+        new(false,result.State switch{"expired"=>"probe_expired","canceled"=>"canceled",_=>"probe_failed"},Wire.Element(result));
     public FileStream Download(AgentRequest request)=>store.Authorized(request.Credential,"read",g=>Found(storage.Open(Str(request.Arguments,"id"),g.View.Owner)));
 }
 public sealed class AgentConflict:Exception;

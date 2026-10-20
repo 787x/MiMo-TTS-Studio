@@ -65,10 +65,10 @@ agent cancel_job --id JOB_ID
 | 3 | permission_denied：系统文件/对端/授权/权限拒绝 |
 | 4 | service_unavailable / incompatible_service：未运行、连接失败、版本不兼容 |
 | 5 | busy：全局槽或本地并发上限 |
-| 6 | execution_failed / idempotency_conflict / response_too_large / export_committed_check_target：执行/存储失败或冲突 |
+| 6 | execution_failed / idempotency_conflict / response_too_large / export_committed_check_target：执行/存储失败或冲突；probe_failed / probe_expired：检测失败或过期 |
 | 7 | timeout / canceled：客户端等待超时、取消 |
 
-错误只输出安全代码，不返回原始上游响应或异常详情。诊断业务结果还需检查 data.state/category，配置就绪不代表在线检测成功。
+普通执行错误只返回安全代码，不返回原始上游响应或异常详情。`probe_service` 的非成功结果仍在 `data` 保留安全诊断详情，按下表设置成功标志、退出码和 MCP 工具错误；收到 HTTP 200 或一份完整诊断结果不代表被检测服务成功。
 
 `requestId` / `--request-id` 仅适用于 TTS 提交，为 1–80 位 ASCII 字母/数字/下划线/连字符。幂等域是**同一个授权、当前后端进程**：相同标识及解析后参数返回同一 Job，不再发起收费请求；不同参数返回 idempotency_conflict。最多保留 256 条记录，满后拒绝新带标识提交，不自动淘汰以导致重复收费。任务状态仍只保留原 Jobs 最近 100 条，因此早期幂等命中可能返回已不可查询的旧 Job ID；资产仍在库中。**重启/升级后记录消失**；网络断开时不得把新的 requestId 当作自动重试。无标识时不提供去重保证。
 
@@ -140,7 +140,18 @@ CLI 与 MCP 共用下表名称/Schema/执行层。以下 `{parameters}` 均为�
 
 六类 AI 复用已保存的 LLM URL、模型、Thinking、Streaming、Key，以及 `Llm.Generate`/`Creative.Prompt`/`Validate`。音色描述需求在 parameters.voiceDescription（design），风格需求在 style，导演需求在 character/scene/direction，写稿/歌词/标签需求在 text。歌词要求 preset + singing=true。导演返回 text/role/scene/direction；其他返回 text 候选。标签工具严格只插入目录标签，拒绝改写原文或拆开 Unicode；不完整 SSE/截断/失败不算有效候选。不会改 Web 草稿、自动 TTS 或上传样本。
 
-检测 clone 必须明确 sampleId，不能自动寻找/上传其他样本。check 只做离线检查，probe 才发送一次固定测试请求且可能计费；结果沿用 Diagnostics 的 state/category/reason/configuration。普通服务状态不返回 URL、Key 或私密路径；API Key 更新继续在 Web 设置完成。
+检测 clone 必须明确 sampleId，不能自动寻找/上传其他样本。`check_service_configuration` 只做离线检查：成功执行时仍返回 success=true / code=ok / 退出0，即使 data.ready=false；配置就绪不代表上游可用。`probe_service` 才发送一次固定测试请求且可能计费，按真实诊断终态报告：
+
+| data.state | success | code | CLI退出码 | MCP isError |
+| --- | --- | --- | --- | --- |
+| succeeded | true | ok | 0 | false |
+| failed | false | probe_failed | 6 | true |
+| expired | false | probe_expired | 6 | true |
+| canceled | false | canceled | 7 | true |
+
+四种结果均在 `data` 保留 `state`、`category`、`reason`、`elapsedMs`、`testedAt`、`configuration` 安全摘要；失败/过期/取消不会丢掉诊断类别和原因。MCP 的 `structuredContent` 和文本结果使用同一个 AgentReply，`isError` 与 success 对应。例如配置缺失可得到 probe_expired，并从 data.category / data.reason 了解缺项；检测自身超时若由 Diagnostics 返回 failed，仍是 probe_failed，data.category=timeout。IPC操作预算到期则返回独立传输层 timeout（退出7），不伪造完整诊断结果。
+
+普通服务状态不返回 URL、Key 或私密路径；API Key 更新继续在 Web 设置完成。
 
 ```bash
 agent generate_voice_description --synthesis-mode design --voice-description '温暖低沉男声'
@@ -199,6 +210,6 @@ Windows/Linux 客户端可通过受信任 SSH 在 NAS 启动 stdio 进程：
 
 Agent IPC v1 是专用0600 Unix Socket，一连接一请求，4个固定服务 worker、最多4个 MCP 业务调用；请求头 JSON 最多128 KiB，响应最多256 KiB，MCP JSON-RPC 每条输入最多128 KiB。SDK结果同时含文本与结构化对象，整体输出仍有界（约为IPC响应的两倍加协议元数据）。默认 JSON 编码转义及风格字段会计入请求体上限，正文上限与整个请求体上限必须同时满足；不会静默截断。
 
-认证/读取头预算5秒，操作总预算4分钟；导入另有7.4MB受限二进制帧，下载按已验证长度最多64MiB分块传输。CLI连接超时5秒，`--timeout` 总预算1–1200秒（默认1200）；后端仍有独立操作/Jobs/LLM/检测/NAS导出时限。上传/下载失败无自动重试。服务协议不兼容返回 incompatible_service，需要更新客户端与服务。旧服务没有 agent.sock 会返回 service_unavailable。应用停止/升级清理 Agent Socket，下次启动重建；只有新启动的服务接纳请求。
+认证/读取头预算5秒，操作总预算4分钟。操作预算到期且尚未尝试写响应时，使用独立、最多2秒且受应用停止约束的发送预算尽力返回完整 timeout；不延长业务执行或重新请求上游。已知断开的连接、应用关闭或已尝试写入（可能部分帧）的连接直接清理，不追加第二份响应；不可写客户端也不会无限等待。因此真实断连/部分写入仍可能返回连接不可用，客户端自身等待预算也保持独立。导入另有7.4MB受限二进制帧，下载按已验证长度最多64MiB分块传输。CLI连接超时5秒，`--timeout` 总预算1–1200秒（默认1200）；后端仍有独立操作/Jobs/LLM/检测/NAS导出时限。上传/下载失败无自动重试。服务协议不兼容返回 incompatible_service，需要更新客户端与服务。旧服务没有 agent.sock 会返回 service_unavailable。应用停止/升级清理 Agent Socket，下次启动重建；只有新启动的服务接纳请求。
 
 Agent 私有持久状态位于 TRIM_PKGVAR/agent，升级保留；保留数据卸载保留此目录，重装后重新收紧权限；确认删除数据的卸载仅删除本应用私有 agent/audio/samples/保留配置目录。正常保留不会改变旧 TTS/LLM Key、样本、资产或 NAS 授权；服务重启仍沿用原有进程内 Jobs 历史消失的边界。

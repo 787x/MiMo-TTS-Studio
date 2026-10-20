@@ -104,6 +104,7 @@ await Pr4Tests.Run(Check);
 await Pr5Tests.Run(Check);
 Pr6Tests.Run(Check, Reject);
 await Pr7Tests.Run(Check);
+await Pr7FeedbackTests.Run(Check,args.Length==2&&args[0]=="--feedback-fixtures"?args[1]:null);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler

@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup><PackageReference Include="NLayer" Version="3.0.0" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="Studio.Tests" /></ItemGroup>
   <ItemGroup>
     <!-- Runtime state and local UI previews must never enter a publish payload.
          The FPK build copies the verified frontend dist explicitly. -->

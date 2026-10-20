@@ -1,9 +1,29 @@
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using System.Text.Json;
+bool feedback=args.Length>=3&&args[0]=="--probe-feedback";
+var cases=feedback?JsonSerializer.Deserialize<Dictionary<string,JsonElement>>(File.ReadAllText(args[1]))!:null;
+if(feedback)args=args.Skip(2).ToArray();
 using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(90));
 await using var client=await McpClient.CreateAsync(new StdioClientTransport(new(){Command=args[0],Arguments=args.Skip(1).ToArray(),Name="MiMo PR7 smoke"}),cancellationToken:budget.Token);
 var tools=await client.ListToolsAsync(cancellationToken:budget.Token);
+if(feedback)
+{
+    foreach(var (service,state) in new[]{("preset","succeeded"),("design","failed"),("clone","expired"),("llm","canceled")})
+    {
+        var probe=await client.CallToolAsync("probe_service",new Dictionary<string,object?>{["service"]=service},cancellationToken:budget.Token);
+        var expected=cases![state];
+        if(probe.IsError!=(state!="succeeded")||probe.StructuredContent is not {} data||!JsonElement.DeepEquals(data,expected))throw new Exception("probe structured semantics "+state);
+        var text=probe.Content.OfType<TextContentBlock>().Single().Text;
+        using var json=JsonDocument.Parse(text);
+        if(!JsonElement.DeepEquals(json.RootElement,expected))throw new Exception("probe text semantics "+state);
+        Console.WriteLine("PASS official MCP probe "+state+" structuredContent/isError and diagnostic details");
+    }
+    var check=await client.CallToolAsync("check_service_configuration",new Dictionary<string,object?>{["service"]="preset"},cancellationToken:budget.Token);
+    if(check.IsError==true||check.StructuredContent is not {} offline||!JsonElement.DeepEquals(offline,cases!["check"]))throw new Exception("offline check semantics");
+    Console.WriteLine("PASS official MCP offline precheck remains non-error when not ready");
+    return;
+}
 if(tools.Count<30||tools.Any(t=>t.Name is "import_sample" or "download_asset"))throw new Exception("tool discovery");
 var result=await client.CallToolAsync("preview_synthesis",new Dictionary<string,object?>{["text"]="原文 é👋",["parameters"]=new{tags="温柔 清亮",mode="combined",character="旁白",style="自然"}},cancellationToken:budget.Token);
 if(result.IsError==true||result.StructuredContent is not {} preview||!preview.GetProperty("success").GetBoolean())throw new Exception("structured result");
