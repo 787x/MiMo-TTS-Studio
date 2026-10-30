@@ -5,3 +5,7 @@
 修复判据：合法 HTTP(S) Origin 且 Sec-Fetch-Site 明确为 same-origin 时允许代理 Host 改写；其他显式值拒绝。缺失 Fetch Metadata 时保留原 Host/Referer 校验。所有写请求仍须通过可信对端、管理员和 CSRF Token 校验。Fetch Metadata 是浏览器来源信号，不作为身份凭据；非浏览器客户端可伪造它，因此仍依赖私有 Socket、网关身份和不可预测 Token。null 或缺失 Origin 不兼容，安全失败关闭。
 
 验证：Windows Release 后端测试 352 项通过；前端构建通过；WSL Linux Release Unix Socket 集成 76 项通过，模拟了 Host 改写、无 Referer、跨站、错误 Token 和非管理员。用户反馈真实 FN Connect、LAN 和 Lucky 入口人工验收通过，未提供具体操作和 Header 特征。
+
+## 脚本 placeholder 补充
+
+三个模式初始正文为空，示例仅作为输入框提示；模式草稿独立保留。前端 happy-dom 测试 70 项和生产构建通过，覆盖空正文、提示、草稿切换及实际提交文本。重新构建 FPK；此补充修改尚未在真实 fnOS 安装验证，以上 FN Connect、LAN 和 Lucky 的人工验收先于此修改。

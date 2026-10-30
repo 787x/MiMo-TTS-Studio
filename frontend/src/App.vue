@@ -24,7 +24,7 @@ function toggleTheme(){theme.value=theme.value==='light'?'dark':'light';theme.va
 const base='/app/mimotts/api'
 const modeLabels:Record<SynthesisMode,string>={preset:'预置音色',design:'VoiceDesign',clone:'VoiceClone'}
 const selectedMode=ref<SynthesisMode>('preset')
-const draft=(synthesisMode:SynthesisMode)=>({text:synthesisMode==='design'?'你好，很高兴在这里与你相遇。愿这段声音，陪你开启新的故事。':'欢迎来到 MiMo 语音创作台。\n让文字拥有声音，让每一次表达都被听见。',voice:'mimo_default',style:'',mode:'natural',character:'',scene:'',direction:'',tags:'',singing:false,split:true,segmentCharacters:3000,synthesisMode,voiceDescription:'',sourceSampleId:null as string|null})
+const draft=(synthesisMode:SynthesisMode)=>({text:'',voice:'mimo_default',style:'',mode:'natural',character:'',scene:'',direction:'',tags:'',singing:false,split:true,segmentCharacters:3000,synthesisMode,voiceDescription:'',sourceSampleId:null as string|null})
 const drafts=reactive({preset:draft('preset'),design:draft('design'),clone:draft('clone')})
 const form=computed(()=>drafts[selectedMode.value])
 const styleStates=reactive<Record<string,StyleState>>({preset:{manual:'',selected:[]},clone:{manual:'',selected:[]}})
@@ -122,7 +122,7 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     <AiTool :key="selectedMode+'script'+form.singing" :draft="form" :api="api" :task="selectedMode==='preset'&&form.singing?'lyrics':'script'" :label="selectedMode==='preset'&&form.singing?'AI 写歌词':'AI 写稿'" @apply="Object.assign(form,$event)"/>
     <AiTool v-if="selectedMode!=='design'" :key="selectedMode+'tags'" :draft="form" :api="api" task="tags" label="AI 添加标签" @apply="Object.assign(form,$event)"/>
     </div>
-    <div class="editor"><div v-if="selectedMode!=='design'" class="toolbar"><span>插入标签</span><button v-for="tag in labels" :key="tag" class="tag" @mousedown.prevent @click="insert(tag)">{{tag}}</button></div><textarea ref="editor" v-model="form.text" class="script" aria-label="多行语音脚本" spellcheck="false" placeholder="写下你想听见的文字，或在光标处插入句内标签…"></textarea><div class="editor-foot">{{selectedMode==='design'?'试音正文 · 原文提交':'TEXT → VOICE'}} <span>支持中文 / English</span></div></div>
+    <div class="editor"><div v-if="selectedMode!=='design'" class="toolbar"><span>插入标签</span><button v-for="tag in labels" :key="tag" class="tag" @mousedown.prevent @click="insert(tag)">{{tag}}</button></div><textarea ref="editor" v-model="form.text" class="script" aria-label="多行语音脚本" spellcheck="false" :placeholder="selectedMode==='design'?'你好，很高兴在这里与你相遇。愿这段声音，陪你开启新的故事。':'欢迎来到 MiMo 语音创作台。\n让文字拥有声音，让每一次表达都被听见。'"></textarea><div class="editor-foot">{{selectedMode==='design'?'试音正文 · 原文提交':'TEXT → VOICE'}} <span>支持中文 / English</span></div></div>
     <div v-if="selectedMode!=='design'" class="controls"><label v-if="selectedMode==='preset'">预置音色<select v-model="form.voice"><option v-for="v in voices" :key="v" :value="v">{{v==='mimo_default'?'MiMo 默认（随集群变化）':v}}</option></select></label><label>整体风格标签<input v-model="form.tags" placeholder="例如：温柔 清亮" maxlength="200"></label></div>
     <StylePicker v-if="selectedMode!=='design'" :key="selectedMode" :tags="form.tags" :singing="form.singing" :mode="selectedMode" :state="styleStates[selectedMode]!" :validate="validateStyles" @change="(tags,singing)=>{form.tags=tags;form.singing=singing}"/>
     <div class="tabs" role="group" aria-label="风格模式"><button v-for="m in [{id:'natural',name:'自然语言'},{id:'director',name:'导演模式'},{id:'combined',name:'组合指导'}]" :key="m.id" :class="{active:form.mode===m.id}" @click="form.mode=m.id">{{m.name}}</button></div>
