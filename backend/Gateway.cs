@@ -30,6 +30,9 @@ public static partial class Gateway
         var origin = request.Headers.Origin;
         if (origin.Count != 1 || !Uri.TryCreate(origin, UriKind.Absolute, out var u) ||
             u.Scheme is not ("http" or "https") || u.AbsolutePath != "/" || u.Query != "" || u.Fragment != "" || u.UserInfo != "") return false;
+        var site = request.Headers["Sec-Fetch-Site"];
+        // Browser-controlled metadata describes the request before proxy Host rewriting.
+        if (site.Count != 0) return site.Count == 1 && site == "same-origin";
         if (u.Authority.Equals(request.Host.Value, StringComparison.OrdinalIgnoreCase)) return true;
         // fnOS nginx uses `Host $host`, dropping :5666 (verified on device).
         // Require the browser Referer to confirm the complete Origin in this case.

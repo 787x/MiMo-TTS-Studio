@@ -98,6 +98,12 @@ Check(Gateway.SafeOrigin(ctx.Request),"fnOS stripped port accepted with matching
 ctx.Request.Headers.Origin="http://evil.test";Check(!Gateway.SafeOrigin(ctx.Request),"cross-origin rejected");
 ctx.Request.Headers.Origin="null";Check(!Gateway.SafeOrigin(ctx.Request),"opaque origin rejected");
 ctx.Request.Headers.Origin="http://nas.test:1234";Check(!Gateway.SafeOrigin(ctx.Request),"mismatched referer port rejected");
+ctx.Request.Headers.Origin="https://external.test";ctx.Request.Headers.Remove("Referer");ctx.Request.Headers["Sec-Fetch-Site"]="same-origin";
+Check(Gateway.SafeOrigin(ctx.Request),"same-origin metadata accepts rewritten host without referer");
+ctx.Request.Headers["Sec-Fetch-Site"]="cross-site";Check(!Gateway.SafeOrigin(ctx.Request),"cross-site metadata rejected");
+ctx.Request.Headers["Sec-Fetch-Site"]="same-site";Check(!Gateway.SafeOrigin(ctx.Request),"same-site metadata rejected");
+ctx.Request.Headers["Sec-Fetch-Site"]="same-origin";ctx.Request.Headers.Origin="null";Check(!Gateway.SafeOrigin(ctx.Request),"opaque origin rejected even with metadata");
+ctx.Request.Headers.Remove("Origin");Check(!Gateway.SafeOrigin(ctx.Request),"missing origin rejected even with metadata");
 await Pr2Tests.Run(Check, Reject);
 await Pr3Tests.Run(Check, Reject);
 await Pr4Tests.Run(Check);
