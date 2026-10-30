@@ -58,6 +58,14 @@ try:
     check(request(export_path,'POST',export_data,writes)[0]==400,'missing or unowned export asset rejected without platform query or TTS')
     check(request('/api/export/targets')[0]==400,'missing live platform authority fails closed instead of using environment paths')
     check(request('/api/preview','POST',{'text':'你好'},writes)[0]==200,'gateway Origin port compatibility')
+    proxy={'Origin':'https://external.example','Sec-Fetch-Site':'same-origin','X-Studio-CSRF':session['csrf']}
+    check(request('/api/preview','POST',{'text':'你好'},proxy)[0]==200,'rewritten host and absent referer accepted with same-origin metadata')
+    check(request('/api/preview','POST',{'text':'你好'},{**proxy,'Sec-Fetch-Site':'cross-site'})[0]==403,'cross-site metadata denied')
+    check(request('/api/preview','POST',{'text':'你好'},{**proxy,'X-Studio-CSRF':'wrong'})[0]==403,'rewritten host requires correct token')
+    check(request('/api/preview','POST',{'text':'你好'},proxy,identity=False)[0]==403,'rewritten host requires admin')
+    check(request('/api/preview','POST',{'text':'你好'},{**proxy,'X-Trim-Isadmin':'false'})[0]==403,'rewritten host denies non-admin')
+    check(request('/api/preview','POST',{'text':'你好'},{'Origin':'https://external.example','X-Studio-CSRF':session['csrf']})[0]==403,'rewritten host without metadata fails closed')
+    check(request('/api/key','PUT',{'key':'proxy-test'},proxy)[0]==200 and request('/api/key','DELETE',headers=proxy)[0]==204,'rewritten host key update and clear')
     for path,data in [('/api/diagnostics/check',{'service':'preset'}),('/api/diagnostics/run',{'service':'preset','id':'0'*32}),('/api/diagnostics/'+'0'*32+'/cancel',None)]:
         check(request(path,'POST',data,headers=writes,identity=False)[0]==403,'diagnostic endpoint admin protection '+path)
         check(request(path,'POST',data,headers={**writes,'Origin':'http://evil.test'})[0]==403,'diagnostic endpoint Origin protection '+path)
