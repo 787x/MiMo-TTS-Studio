@@ -180,6 +180,8 @@ bash scripts/build.sh
 
 PR7 阶段已在真实 **fnOS 1.2.0800** 验证安装升级、Web/CLI/MCP 共用资产、真实三模式 MiMo、六类 LLM 创作、SSH MCP、撤销授权及 NAS 导出。**v0.7.2** 的修复额外完成 Linux/WSL 受控回归、真实 UDS 与 SDK MCP 客户端检查及发布包结构/许可检查，完整证据和剩余验证事项见 [verification/PR7.md](verification/PR7.md)。
 
+**v0.7.4** 修复 fnOS 开机自启动的进程检查时序问题，已在测试 NAS 完成原位升级、整机重启和桌面入口验证。见 [0.7.4 开机自启动故障与验收](verification/Startup-0.7.4.md)。
+
 ## 📄 许可与致谢
 
 项目源代码采用 **GNU GPL-3.0**，详见 [LICENSE](LICENSE)；打包时保留第三方依赖的对应许可及声明（见 [third_party/](third_party/)）。本项目独立开发，参考小米公开的 [MiMo-V2.5-TTS 文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/audio/speech-synthesis-v2.5)、[MiMo LLM 文档](https://mimo.mi.com/docs/zh-CN/api/chat/openai-api) 和 [fnOS 开发者文档](https://developer.fnnas.com/docs/)，并只读参考 [SeleVox](https://github.com/787x/SeleVox) 的相关功能设计。
