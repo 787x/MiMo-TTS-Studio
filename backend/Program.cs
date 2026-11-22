@@ -59,7 +59,7 @@ app.Use(async (context, next) =>
     }
     context.Response.Headers.CacheControl = "no-store";
     context.Response.Headers.XContentTypeOptions = "nosniff";
-    context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
+    context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
     if (!Gateway.Admin(context)) { context.Response.StatusCode = 403; await context.Response.WriteAsJsonAsync(new { error = "仅允许通过 fnOS 可信网关登录的管理员访问。" }); return; }
     if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
     {
