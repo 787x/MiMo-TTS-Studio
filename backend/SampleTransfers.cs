@@ -11,6 +11,12 @@ public sealed class SampleTransfers(Storage storage)
             string name = Storage.SampleName(Uri.UnescapeDataString(context.Request.Headers["X-Sample-Name"].ToString()));
             string format = context.Request.Headers["X-Sample-Format"].ToString();
             _ = SampleAudio.Mime(format);
+            string source = context.Request.Headers["X-Sample-Source"].ToString() switch
+            {
+                "" or "upload" => "upload",
+                "recording" when format == "wav" => "recording",
+                _ => throw new InputError("样本来源或录音格式无效。")
+            };
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
             timeout.CancelAfter(TimeSpan.FromSeconds(30));
             using var content = new MemoryStream();
@@ -20,7 +26,7 @@ public sealed class SampleTransfers(Storage storage)
                 if (content.Length + n > SampleAudio.MaxBytes) return Results.StatusCode(413);
                 content.Write(block, 0, n);
             }
-            var sample = storage.CreateSample(owner, name, format, content.ToArray(), ct: timeout.Token);
+            var sample = storage.CreateSample(owner, name, format, content.ToArray(), source, ct: timeout.Token);
             return Results.Json(sample, statusCode: 201);
         }
         catch (OperationCanceledException) { return Results.Json(new { error = "样本上传已取消或超时，没有保存样本。" }, statusCode: 408); }
