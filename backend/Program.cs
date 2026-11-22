@@ -125,7 +125,11 @@ app.MapPost("/api/assets/{id}/sample", (HttpContext c, string id, SampleNameInpu
 app.UseDefaultFiles(); app.UseStaticFiles();
 app.Lifetime.ApplicationStarted.Register(() =>
 {
-    if (socket != null && OperatingSystem.IsLinux()) File.SetUnixFileMode(socket, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    if (socket != null && OperatingSystem.IsLinux())
+    {
+        File.SetUnixFileMode(socket, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        File.WriteAllText(Path.Combine(root, "server.ready"), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
 });
 app.Lifetime.ApplicationStopped.Register(() => { if (socket != null) File.Delete(socket); instance?.Dispose(); });
 await app.RunAsync();
