@@ -51,6 +51,10 @@ public static class Catalog
     static readonly JsonElement Id = Object(new() { ["id"] = Text(32) }, "id");
     static readonly JsonElement Name = Object(new() { ["name"] = Text(64) }, "name");
     static readonly JsonElement Page = Args(("offset",new{type="integer",minimum=0,maximum=1000}));
+    static object Position => new { type = "integer", minimum = 0L, maximum = long.MaxValue };
+    static JsonElement WorkPage(params string[] extra) => Object(new[] { "id", "offset" }.Concat(extra)
+        .ToDictionary(k => k, k => k == "id" ? Text(32) : Position), "id");
+    static JsonElement VolumeId => Object(new() { ["id"] = Text(32), ["number"] = Position }, "id", "number");
     static readonly JsonElement Diagnostic = Object(new() { ["service"] = Choice("preset", "design", "clone", "llm"), ["sampleId"] = Text(32) }, "service");
     static ToolSpec S(string name, string scope, string description, JsonElement? schema = null, bool read = false, bool destructive = false, bool cli = false) => new(name, scope, description, schema ?? Args(), read, destructive, cli);
     public static readonly ToolSpec[] Tools =
@@ -68,6 +72,23 @@ public static class Catalog
         S("synthesize_audio","generate","Submit TTS Job. Sends text/style and selected clone sample to MiMo; may charge. Disconnect does not cancel. No retry.",Submit),
         S("list_jobs","read","Current user's Jobs; omits creative text.",Page,read:true), S("get_job_status","read","Job state, segment progress, result asset ID and safe error.",Id,true),
         S("cancel_job","generate","Request cancellation of owned Job only; poll until terminal state.",Id),
+        S("create_work","generate","Create an owned upload. Optional client UUID makes creation recoverable.",Object(new(){["title"]=Text(160),["id"]=Text(32)},"title")),
+        S("upload_work_chunk","generate","Append up to 64 KiB of Base64-encoded UTF-8 bytes at the acknowledged byte offset. Replay identical chunks safely.",
+            Object(new(){["id"]=Text(32),["offset"]=Position,["sha256"]=Text(64),["data"]=Text(87384)},"id","offset","sha256","data")),
+        S("upload_work_file","generate","CLI-only: upload an explicitly selected private TXT file into an existing work.",Id,cli:true),
+        S("prepare_work","generate","Seal uploaded text and build the local index using the selected preset or clone parameters.",
+            Object(new(){["id"]=Text(32),["bytes"]=Position,["sha256"]=Text(64),["parameters"]=Parameters,["preset"]=Text(64)},"id","bytes")),
+        S("list_works","read","List owned works and durable progress.",Args(("offset",new{type="integer",minimum=0,maximum=int.MaxValue})),read:true),
+        S("get_work","read","Get one owned work and the acknowledged upload offset.",Id,true),
+        S("preview_work","read","Page through the exact source segments and MiMo prefix.",WorkPage(),true),
+        S("list_work_chapters","read","Page through recognized headings.",WorkPage(),true),
+        S("list_work_volumes","read","Ordered WAV volumes, optionally filtered by zero-based chapter.",WorkPage("chapter"),true),
+        S("control_work","generate","Start, pause, resume, or cancel an owned work. confirm=true authorizes one potentially billable retry.",
+            Object(new(){["id"]=Text(32),["action"]=Choice("start","pause","resume","cancel"),["confirm"]=new{type="boolean"}},"id","action")),
+        S("delete_work","delete","Delete inactive owned work and its private data. External exports remain.",Id,destructive:true),
+        S("download_work_volume","read","CLI-only: download an owned numbered WAV volume to a new file.",VolumeId,true,cli:true),
+        S("export_work_volume","export","Copy an owned WAV volume to a live authorized NAS directory.",
+            Object(new(){["id"]=Text(32),["number"]=Position,["directoryId"]=Text(64),["fileName"]=Text(160)},"id","number","directoryId","fileName")),
         S("generate_voice_description","generate","Paid LLM voice description candidate, no TTS or draft changes.",Tts),
         S("generate_style_instruction","generate","Paid LLM style candidate, no TTS or draft changes.",Tts),
         S("generate_director_plan","generate","Paid LLM role/scene/direction candidate, no TTS or draft changes.",Tts),
@@ -93,12 +114,12 @@ public static class Catalog
     {
         if (schema.TryGetProperty("type", out var types))
         {
-            string kind = value.ValueKind switch { JsonValueKind.Object => "object", JsonValueKind.String => "string", JsonValueKind.Null => "null", JsonValueKind.True or JsonValueKind.False => "boolean", JsonValueKind.Number when value.TryGetInt32(out _) => "integer", _ => "invalid" };
+            string kind = value.ValueKind switch { JsonValueKind.Object => "object", JsonValueKind.String => "string", JsonValueKind.Null => "null", JsonValueKind.True or JsonValueKind.False => "boolean", JsonValueKind.Number when value.TryGetInt64(out _) => "integer", _ => "invalid" };
             if (types.ValueKind == JsonValueKind.Array ? !types.EnumerateArray().Any(t => t.GetString() == kind) : types.GetString() != kind) throw new ArgumentException();
         }
         if (schema.TryGetProperty("enum", out var choices) && !choices.EnumerateArray().Any(c => JsonElement.DeepEquals(c,value))) throw new ArgumentException();
         if (value.ValueKind == JsonValueKind.String && schema.TryGetProperty("maxLength", out var length) && value.GetString()!.Length > length.GetInt32()) throw new ArgumentException();
-        if (value.ValueKind == JsonValueKind.Number && (value.GetInt32() < schema.GetProperty("minimum").GetInt32() || value.GetInt32() > schema.GetProperty("maximum").GetInt32())) throw new ArgumentException();
+        if (value.ValueKind == JsonValueKind.Number && (value.GetInt64() < schema.GetProperty("minimum").GetInt64() || value.GetInt64() > schema.GetProperty("maximum").GetInt64())) throw new ArgumentException();
         if (value.ValueKind == JsonValueKind.Object)
         {
             var seen = new HashSet<string>(); var properties = schema.GetProperty("properties");

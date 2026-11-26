@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LongWorks from "./LongWorks.vue"
 import AgentSettings from "./AgentSettings.vue"
 import StylePicker from "./StylePicker.vue"
 import type {StyleState} from "./styles"
@@ -32,7 +33,7 @@ async function validateStyles(tags:string,singing:boolean){
  const before=fingerprint()
  // Composition-only endpoint: validate the text budget without requiring a selected clone sample.
  const f=form.value
- await api('/preview','POST',{text:f.text.trim()?f.text:'校验',tags,singing,split:f.split,segmentCharacters:f.segmentCharacters})
+ await api('/preview','POST',{text:textBytes.value<=60000&&f.text.trim()?f.text:'校验',tags,singing,split:f.split,segmentCharacters:f.segmentCharacters})
  if(before!==fingerprint())throw new Error('草稿已更改，请重新添加风格。')
 }
 const voices=ref<string[]>([]), configured=ref(false), csrf=ref(''), key=ref(''), error=ref(''), notice=ref(''), loading=ref(true)
@@ -41,7 +42,19 @@ const results=reactive<Record<SynthesisMode,{id:string;snapshot:string}>>({prese
 const resultId=computed({get:()=>results[selectedMode.value].id,set:(id)=>{results[selectedMode.value].id=id}})
 const editor=ref<HTMLTextAreaElement>(), showSettings=ref(false), working=ref(false), pending=ref(false)
 const fingerprint=()=>JSON.stringify(form.value)
-const textBytes=computed(()=>new TextEncoder().encode(form.value.text).length)
+const textBytes=computed(()=>new Blob([form.value.text]).size)
+const longWorks=ref<InstanceType<typeof LongWorks>>()
+function useLongText(){document.getElementById('long-works')?.scrollIntoView();return longWorks.value?.paste()}
+function pasteScript(event: ClipboardEvent){
+ const input=event.clipboardData?.getData('text/plain')
+ const element=editor.value
+ if(!input||!element||selectedMode.value==='design')return
+ const source=new Blob([element.value.slice(0,element.selectionStart),input,element.value.slice(element.selectionEnd)])
+ if(source.size<=60000)return
+ event.preventDefault()
+ longWorks.value?.stage(source)
+ document.getElementById('long-works')?.scrollIntoView()
+}
 const stale=computed(()=>!!resultId.value && results[selectedMode.value].snapshot!==fingerprint())
 const busy=computed(()=>pending.value || (!!job.value && ['running','canceling'].includes(job.value.state)))
 const result=computed(()=>assets.value.find(a=>a.id===resultId.value))
@@ -117,12 +130,12 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     <AiTool v-if="selectedMode==='design'" :key="selectedMode+'description'" :draft="form" :api="api" task="description" label="AI 完善音色描述" @apply="Object.assign(form,$event)"/>
     <label v-if="selectedMode==='design'" class="voice-description">音色描述<textarea v-model="form.voiceDescription" rows="3" placeholder="例如：成年女性，声音温暖醇厚，带一点沙哑，像深夜电台的主持人。"></textarea><small>描述进入 user 指令；下方正文进入 assistant。保持原文，不启用服务端优化。每次独立设计具有随机性，不保证相同描述得到同一声音。</small></label>
     <div v-if="selectedMode==='clone'" class="clone-source"><label>参考声音样本<select v-model="form.sourceSampleId"><option :value="null" disabled>从持久样本库选择</option><option v-for="s in samples" :key="s.id" :value="s.id">{{s.name}} · {{s.format.toUpperCase()}} · {{s.durationSeconds.toFixed(2)}} 秒</option></select></label><template v-if="selectedSample"><p class="hint">{{selectedSample.format.toUpperCase()}} · {{selectedSample.durationSeconds.toFixed(2)}} 秒 · {{size(selectedSample.bytes)}} · 本地音频样本，不是云端 Voice ID</p><audio :key="selectedSample.id" :src="base+'/samples/'+selectedSample.id+'/audio'" controls preload="metadata" aria-label="当前克隆参考样本"></audio></template><p v-else class="hint">先上传、录制或从 VoiceDesign 结果保存样本。已删除的样本不能用于新任务。</p></div>
-    <div class="section-title"><h2><span>01</span> 脚本与演绎</h2><small>{{textBytes.toLocaleString()}} / 60,000 bytes</small></div>
+    <div class="section-title"><h2><span>01</span> 脚本与演绎</h2><small>{{textBytes.toLocaleString()}} UTF-8 字节</small></div>
     <div class="script-ai-tools">
     <AiTool :key="selectedMode+'script'+form.singing" :draft="form" :api="api" :task="selectedMode==='preset'&&form.singing?'lyrics':'script'" :label="selectedMode==='preset'&&form.singing?'AI 写歌词':'AI 写稿'" @apply="Object.assign(form,$event)"/>
     <AiTool v-if="selectedMode!=='design'" :key="selectedMode+'tags'" :draft="form" :api="api" task="tags" label="AI 添加标签" @apply="Object.assign(form,$event)"/>
     </div>
-    <div class="editor"><div v-if="selectedMode!=='design'" class="toolbar"><span>插入标签</span><button v-for="tag in labels" :key="tag" class="tag" @mousedown.prevent @click="insert(tag)">{{tag}}</button></div><textarea ref="editor" v-model="form.text" class="script" aria-label="多行语音脚本" spellcheck="false" :placeholder="selectedMode==='design'?'你好，很高兴在这里与你相遇。愿这段声音，陪你开启新的故事。':'欢迎来到 MiMo 语音创作台。\n让文字拥有声音，让每一次表达都被听见。'"></textarea><div class="editor-foot">{{selectedMode==='design'?'试音正文 · 原文提交':'TEXT → VOICE'}} <span>支持中文 / English</span></div></div>
+    <div class="editor"><div v-if="selectedMode!=='design'" class="toolbar"><span>插入标签</span><button v-for="tag in labels" :key="tag" class="tag" @mousedown.prevent @click="insert(tag)">{{tag}}</button></div><textarea ref="editor" v-model="form.text" class="script" aria-label="多行语音脚本" spellcheck="false" @paste="pasteScript" :placeholder="selectedMode==='design'?'你好，很高兴在这里与你相遇。愿这段声音，陪你开启新的故事。':'欢迎来到 MiMo 语音创作台。\n让文字拥有声音，让每一次表达都被听见。'"></textarea><div class="editor-foot">{{selectedMode==='design'?'试音正文 · 原文提交':'TEXT → VOICE'}} <span>支持中文 / English</span></div></div>
     <div v-if="selectedMode!=='design'" class="controls"><label v-if="selectedMode==='preset'">预置音色<select v-model="form.voice"><option v-for="v in voices" :key="v" :value="v">{{v==='mimo_default'?'MiMo 默认（随集群变化）':v}}</option></select></label><label>整体风格标签<input v-model="form.tags" placeholder="例如：温柔 清亮" maxlength="200"></label></div>
     <StylePicker v-if="selectedMode!=='design'" :key="selectedMode" :tags="form.tags" :singing="form.singing" :mode="selectedMode" :state="styleStates[selectedMode]!" :validate="validateStyles" @change="(tags,singing)=>{form.tags=tags;form.singing=singing}"/>
     <div class="tabs" role="group" aria-label="风格模式"><button v-for="m in [{id:'natural',name:'自然语言'},{id:'director',name:'导演模式'},{id:'combined',name:'组合指导'}]" :key="m.id" :class="{active:form.mode===m.id}" @click="form.mode=m.id">{{m.name}}</button></div>
@@ -132,7 +145,8 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     <div v-if="form.mode!=='natural'" class="director"><label>角色<textarea v-model="form.character" rows="2" placeholder="人物身份、性格与说话习惯"></textarea></label><label>场景<textarea v-model="form.scene" rows="2" placeholder="此刻发生了什么，在对谁说话"></textarea></label><label>指导<textarea v-model="form.direction" rows="2" placeholder="语速、气息、停顿、重音和情绪"></textarea></label></div>
     <div v-if="selectedMode!=='design'" class="options"><label v-if="selectedMode==='preset'" class="check"><input type="checkbox" v-model="form.singing">唱歌模式 <small>每段添加 (唱歌)</small></label><label class="check"><input type="checkbox" v-model="form.split">自动分段</label><label class="target">目标文本元素数 <input type="number" v-model.number="form.segmentCharacters" min="50" max="3000" :disabled="!form.split"></label></div>
     <p class="hint">{{selectedMode==='design'?'VoiceDesign 只生成一段试音，最多 3000 UTF-8 字节。长文本请先保存声音样本，再用 VoiceClone；不会拆成多个随机设计。':'每段含前缀最多 3000 UTF-8 字节；按自然句边界切分。唱歌仅适用于预置模式，歌词建议保持完整。'}}</p>
-    <div class="actions"><button class="quiet" @click="plan">预览最终请求</button><button class="primary" :disabled="busy||!configured||!form.text.trim()||(selectedMode==='design'&&!form.voiceDescription.trim())||(selectedMode==='clone'&&!selectedSample)" @click="generate">{{busy?'生成进行中…':'✦ 生成语音'}}</button></div>
+    <div v-if="textBytes>60000&&selectedMode!=='design'" class="actions"><button class="primary" @click="useLongText()">建立长篇作品并预览</button></div>
+    <div v-else class="actions"><button class="quiet" @click="plan">预览最终请求</button><button class="primary" :disabled="busy||!configured||!form.text.trim()||(selectedMode==='design'&&!form.voiceDescription.trim())||(selectedMode==='clone'&&!selectedSample)" @click="generate">{{busy?'生成进行中…':'✦ 生成语音'}}</button></div>
     <p class="privacy">仅点击「生成语音」发送本次正文与风格{{selectedMode==='clone'?'及选中的完整参考音频到小米云端':''}}；分段逐次请求，不自动重试。仅保存、上传或试听样本不发送给 MiMo。</p>
     <details v-if="preview" open class="preview"><summary>实际提交预览 · {{preview.segments.length}} 段 <em v-if="!previewCurrent">（输入已更改，请重新预览）</em></summary><p class="hint">{{preview.model}} · 非流式 WAV<span v-if="preview.sourceSample"> · 参考样本：{{preview.sourceSample.name}}（{{preview.sourceSample.format}}，{{preview.sourceSample.durationSeconds.toFixed(2)}} 秒）</span></p><h3>user · 风格指令 / 音色描述</h3><pre>{{preview.user||'（省略 user 消息）'}}</pre><div v-for="(text,i) in preview.assistant" :key="i"><h3>assistant · 第 {{i+1}} 段</h3><pre>{{text}}</pre></div></details>
    </section>
@@ -149,5 +163,6 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     <p class="footnote">独立的 fnOS 语音创作工具<br>音频由 MiMo 云端生成 · 播放发生在你的浏览器</p>
    </aside>
   </div>
+  <LongWorks v-if="!loading" ref="longWorks" :api="api" :base="base" :csrf="csrf" :configured="configured" :parameters="form" />
  </main>
 </template>

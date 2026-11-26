@@ -51,7 +51,11 @@ try
     }
     using var timeout=CancellationTokenSource.CreateLinkedTokenSource(canceled.Token);timeout.CancelAfter(TimeSpan.FromSeconds(options.Timeout));
     AgentReply result;
-    if(options.Input!=null)
+    if(options.Tool=="upload_work_file")
+    {
+        result=await WorkUpload.Send(client,options.Arguments,options.Input!,TimeSpan.FromSeconds(options.Timeout),canceled.Token);
+    }
+    else if(options.Input!=null)
     {
         using var file=LinuxIdentity.OpenPrivate(options.Input,7400000);using var content=new MemoryStream();
         byte[] block=new byte[65536];int read;while((read=await file.ReadAsync(block,timeout.Token))>0){if(content.Length+read>7400000)throw new ArgumentException();content.Write(block,0,read);}

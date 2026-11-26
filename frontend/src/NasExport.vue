@@ -1,13 +1,31 @@
 <script setup lang="ts">
 import {computed,onMounted,onUnmounted,ref} from 'vue'
 import {TrimApp} from '@trimjs/web-app'
-const props=defineProps<{assetId:string;api:(path:string,method?:string,data?:unknown,signal?:AbortSignal)=>Promise<any>}>()
+const props=defineProps<{assetId:string;exportPath?:string;chapter?:{path:string;chapter:number};api:(path:string,method?:string,data?:unknown,signal?:AbortSignal)=>Promise<any>}>()
 const emit=defineEmits<{close:[]}>()
 type Target={id:string;path:string;writable:boolean;reason:string|null}
 const targets=ref<Target[]>([]),directoryId=ref(''),fileName=ref(defaultName()),busy=ref(false),loading=ref(false),error=ref(''),receipt=ref(''),guide=ref(false),authorizing=ref(false)
 const chosen=computed(()=>targets.value.find(t=>t.id===directoryId.value))
 const finalName=computed(()=>fileName.value.toLowerCase().endsWith('.wav')?fileName.value.slice(0,-4)+'.wav':fileName.value+'.wav')
 const lifetime=new AbortController();let disposed=false,revision=0
+let batchOffset=0,batchCount=0
+async function exportChapter(input:{directoryId:string;fileName:string}){
+ const chapter=props.chapter!
+ const stem=input.fileName.replace(/\.wav$/i,'')
+ let next:number|null=batchOffset
+ while(next!==null){
+  const page:{items:{number:number}[];nextOffset:number|null}=await props.api(chapter.path+'/volumes?chapter='+chapter.chapter+'&offset='+next,'GET',undefined,lifetime.signal)
+  for(const volume of page.items){
+   await props.api(chapter.path+'/volumes/'+volume.number+'/export','POST',
+    {...input,fileName:stem+'-'+(volume.number+1)+'.wav'},lifetime.signal)
+   batchOffset=volume.number+1
+   batchCount++
+   receipt.value='已导出 '+batchCount+' 卷。'
+  }
+  next=page.nextOffset
+ }
+ receipt.value='本章已导出 '+batchCount+' 卷。'
+}
 let host:TrimApp|undefined
 function defaultName(){return 'mimo-'+new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'-'+crypto.getRandomValues(new Uint32Array(1))[0]!.toString(16).padStart(8,'0')+'.wav'}
 async function refresh(){
@@ -33,8 +51,15 @@ async function platform(action:'pick'|'settings'){
 async function save(){
  if(busy.value||loading.value||!chosen.value?.writable)return
  busy.value=true;error.value='';receipt.value=''
- try{const result=await props.api('/assets/'+props.assetId+'/export','POST',{directoryId:directoryId.value,fileName:fileName.value},lifetime.signal);if(!disposed){receipt.value='已导出：'+result.directory+'/'+result.fileName+'（'+result.bytes+' 字节）。私有源音频保留。';fileName.value=defaultName()}}
- catch(e){if(!disposed)error.value=e instanceof Error?e.message:'导出失败，请刷新目录后重试'}
+ try{
+  const input={directoryId:directoryId.value,fileName:fileName.value}
+  if(props.chapter)await exportChapter(input)
+  else {
+   const result=await props.api(props.exportPath??('/assets/'+props.assetId+'/export'),'POST',input,lifetime.signal)
+   if(!disposed){receipt.value='已导出：'+result.directory+'/'+result.fileName+'（'+result.bytes+' 字节）。私有源音频保留。';fileName.value=defaultName()}
+  }
+ }
+ catch(e){if(!disposed)error.value=(e instanceof Error?e.message:'导出失败，请刷新目录后重试')+(props.chapter&&batchCount?' 已导出 '+batchCount+' 卷，继续操作将从尚未确认的分卷开始。':'')}
  finally{if(!disposed)busy.value=false}
 }
 onMounted(refresh)
@@ -52,10 +77,10 @@ onUnmounted(()=>{disposed=true;revision++;lifetime.abort()})
    <form @submit.prevent="save">
     <label>已授权目标文件夹<select v-model="directoryId" :disabled="busy||loading"><option value="" disabled>请选择可写文件夹</option><option v-for="t in targets" :key="t.id" :value="t.id" :disabled="!t.writable">{{t.path}}{{t.reason?' · '+t.reason:''}}</option></select></label>
     <p v-if="!loading&&!targets.length" class="hint">尚无可用授权目录。请先通过 fnOS 授权，不能手动输入宿主机路径。</p>
-    <label>WAV 文件名<input v-model="fileName" :disabled="busy" maxlength="180" required autocomplete="off"></label>
-    <p class="nas-destination">目标：{{chosen?.path||'（尚未选择）'}} / {{finalName}}</p>
+    <label>{{chapter?'WAV 文件名前缀':'WAV 文件名'}}<input v-model="fileName" :disabled="busy" maxlength="180" required autocomplete="off"></label>
+    <p class="nas-destination">目标：{{chosen?.path||'（尚未选择）'}} / {{chapter ? fileName.replace(/\.wav$/i,'')+'-卷号.wav' : finalName}}</p>
     <p class="hint">同名文件不会覆盖；再次导出会使用新的默认名称。请勿在文件名中填写敏感正文。</p>
-    <button :disabled="busy||loading||!chosen?.writable||!fileName.trim()">{{busy?'正在复制，请等待…':'确认导出 WAV 到 NAS'}}</button>
+    <button :disabled="busy||loading||!chosen?.writable||!fileName.trim()">{{busy?'正在复制，请等待…':chapter?'导出本章分卷':'确认导出 WAV 到 NAS'}}</button>
    </form>
   </section>
  </div>

@@ -1,7 +1,7 @@
 """Linux real non-root IPC/CLI/MCP regression; root simulates fnOS gateway only. No cloud calls.
 Run: sudo python3 tests/agent_ipc.py [publish-root]
 """
-import http.client,json,os,pathlib,pwd,select,signal,socket,struct,subprocess,sys,tempfile,time,wave,io
+import base64,hashlib,http.client,json,os,pathlib,pwd,select,signal,socket,struct,subprocess,sys,tempfile,time,wave,io
 assert sys.platform=='linux' and os.getuid()==0
 repo=pathlib.Path(__file__).resolve().parent.parent
 publish=pathlib.Path(sys.argv[1]).resolve() if len(sys.argv)>1 else repo/'artifacts/fpk/app'
@@ -51,6 +51,20 @@ with tempfile.TemporaryDirectory(prefix='mimo-agent-ipc-') as tmp:
   run('get_preset','--name','test');run('get_agent_defaults')
   r=run('preview_synthesis','--text','正文','--preset','test','--style','')
   check(r['data']['user']=='' and r['data']['prefix']=='(清亮)','real IPC preset precedence')
+  work=run('create_work','--title','CLI long fixture')['data']['id']
+  source=root/'files/long.txt';source.write_bytes(('第一章\r\n'+'字'*22_000).encode());os.chown(source,account.pw_uid,account.pw_gid);source.chmod(0o600)
+  uploaded=run('upload_work_file','--id',work,'--input',str(source))['data']
+  check(uploaded['sha256']==hashlib.sha256(source.read_bytes()).hexdigest(),'CLI long upload verifies the exact full text')
+  run('upload_work_file','--id',work,'--input',str(source))
+  run('prepare_work','--id',work,'--bytes',str(uploaded['bytes']),'--sha256',uploaded['sha256'],'--segment-characters','50')
+  for _ in range(50):
+   status=run('get_work','--id',work)['data']
+   if status['state']=='ready':break
+   time.sleep(.05)
+  check(status['state']=='ready' and status['total']>80,'real CLI IPC prepares more than 80 paged segments without MiMo')
+  page=run('preview_work','--id',work)['data']
+  check(len(page['items'])==12 and page['nextOffset']==12,'real CLI IPC preview page is bounded')
+  run('delete_work','--id',work)
   audio=io.BytesIO()
   with wave.open(audio,'wb') as f:f.setnchannels(1);f.setsampwidth(2);f.setframerate(24000);f.writeframes(b'\0'*24000)
   file=root/'files/sample.wav';file.write_bytes(audio.getvalue());os.chown(file,account.pw_uid,account.pw_gid);file.chmod(0o600)
@@ -94,6 +108,19 @@ with tempfile.TemporaryDirectory(prefix='mimo-agent-ipc-') as tmp:
   expected=run('preview_synthesis','--text',same_text,'--tags','温柔 清亮','--style','自然','--mode','combined','--character','旁白')['data']
   actual=rpc('tools/call',{'name':'preview_synthesis','arguments':{'text':same_text,'parameters':{'tags':'温柔 清亮','style':'自然','mode':'combined','character':'旁白'}}})['result']['structuredContent']['data']
   check(expected==actual,'CLI and MCP identical effective Composition for identical parameters')
+  tools=rpc('tools/list')['result']['tools']
+  names={tool['name'] for tool in tools}
+  check('upload_work_chunk' in names and 'upload_work_file' not in names and 'download_work_volume' not in names,'MCP exposes bounded chunks without workstation path tools')
+  def work_call(name, **arguments):
+   result=rpc('tools/call',{'name':name,'arguments':arguments})['result']['structuredContent']
+   assert result['success'],result['code']
+   return result['data']
+  work=work_call('create_work',title='MCP chunk fixture')['id']
+  chunk=('字'*25_000).encode()[:65536]
+  digest=hashlib.sha256(chunk).hexdigest()
+  result=work_call('upload_work_chunk',id=work,offset=0,sha256=digest,data=base64.b64encode(chunk).decode())
+  check(result['bytes']==65536 and work_call('get_work',id=work)['bytes']==65536,'MCP can submit a full bounded chunk and query the persisted cursor')
+  work_call('delete_work',id=work)
   rpc('notifications/cancelled',{'requestId':9999,'reason':'test'},id=None)
   check('result' in rpc('tools/list'),'MCP cancellation notification remains standard protocol')
   web('/agents/'+g['id'],'DELETE')

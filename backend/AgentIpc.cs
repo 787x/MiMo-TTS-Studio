@@ -39,7 +39,7 @@ public sealed class AgentIpc(AgentExecution execution,AgentStore grants,IHostApp
                     var spec=Catalog.Find(request.Tool);Catalog.Validate(request.Arguments,spec.Schema);
                     grants.Authorized(request.Credential,spec.Scope,_=>true);
                     budget.CancelAfter(OperationBudget);
-                    if(request.Tool=="download_asset")
+                    if(request.Tool is "download_asset" or "download_work_volume")
                     {
                         reading=false;
                         using var file=execution.Download(request);if(file.Length>Wave.MaxBytes)throw new InputError("资源过大。");

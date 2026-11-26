@@ -77,7 +77,7 @@ public sealed class NasExport(Storage storage, FnOsDirectories platform)
         if (parts.Skip(1).Any(p => p is "" or "." or ".." || p.StartsWith('@'))) return false;
         if (!System.Text.RegularExpressions.Regex.IsMatch(parts.ElementAtOrDefault(1) ?? "", "^vol[0-9]+$")) return false;
         if (parts.Length < 4) return false;
-        return !new[] { storage.Config, storage.Data, storage.Samples, storage.Temp }.Any(p =>
+        return !new[] { storage.Config, storage.Data, storage.Samples, storage.Temp, storage.WorksRoot }.Any(p =>
             path == Path.GetFullPath(p) || path.StartsWith(Path.GetFullPath(p).TrimEnd('/') + "/", StringComparison.Ordinal) ||
             Path.GetFullPath(p).StartsWith(path.TrimEnd('/') + "/", StringComparison.Ordinal));
     }
@@ -111,7 +111,15 @@ public sealed class NasExport(Storage storage, FnOsDirectories platform)
             !(await platform.Paths(ct)).Contains(path, StringComparer.Ordinal))
             throw new InputError("目录授权已撤销或没有写权限，请重新授权并刷新。");
     }
-    public async Task<ExportReceipt> Copy(string assetId, string owner, ExportInput input, CancellationToken ct)
+    public Task<ExportReceipt> Copy(string assetId, string owner, ExportInput input, CancellationToken ct) =>
+        Copy(owner, input, () =>
+        {
+            var asset = storage.Get(assetId, owner) ?? throw new InputError("音频不存在或无权访问。");
+            var audio = storage.Open(assetId, owner) ?? throw new InputError("音频不存在或无权访问。");
+            return (audio, asset.Bytes);
+        }, ct);
+
+    public async Task<ExportReceipt> Copy(string owner, ExportInput input, Func<(Stream File, long Bytes)> open, CancellationToken ct)
     {
         string name = FileName(input.FileName);
         if (!await slot.WaitAsync(0, ct)) throw new InputError("已有 NAS 导出正在进行，请稍后重试。");
@@ -119,22 +127,22 @@ public sealed class NasExport(Storage storage, FnOsDirectories platform)
         timeout.CancelAfter(TimeSpan.FromMinutes(2)); ct = timeout.Token;
         try
         {
-            var asset = storage.Get(assetId, owner) ?? throw new InputError("音频不存在或无权访问。");
             string path = (await platform.Paths(ct)).Where(Allowed).FirstOrDefault(p => Id(p) == input.DirectoryId)
                 ?? throw new InputError("目标目录未授权或已失效，请刷新目录。");
             await RequireCurrent(owner, path, ct);
             using var dir = ExportDirectory.Open(path);
-            using var source = storage.Open(assetId, owner) ?? throw new InputError("音频不存在或无权访问。");
-            if (asset.Bytes < 44 || asset.Bytes > Wave.MaxBytes || source.Length != asset.Bytes) throw new InputError("源音频不完整，无法导出。");
+            var (file, bytes) = open();
+            using var source = file;
+            if (bytes < 44 || bytes > Wave.MaxBytes || source.Length != bytes) throw new InputError("源音频不完整，无法导出。");
             using var target = dir.Temporary();
             var buffer = new byte[64 * 1024]; long total = 0; int n;
             while ((n = await source.ReadAsync(buffer, ct)) != 0)
             {
                 total += n;
-                if (total > asset.Bytes) throw new InputError("源音频长度变化，导出已取消。");
+                if (total > bytes) throw new InputError("源音频长度变化，导出已取消。");
                 await target.WriteAsync(buffer.AsMemory(0, n), ct);
             }
-            if (total != asset.Bytes || target.Length != total) throw new InputError("音频未完整复制，导出已取消。");
+            if (total != bytes || target.Length != total) throw new InputError("音频未完整复制，导出已取消。");
             target.Flush(true);
             await RequireCurrent(owner, path, ct);
             dir.RequireSame(path);
@@ -183,6 +191,12 @@ internal sealed class ExportDirectory(SafeFileHandle handle) : IDisposable
             95 or 22 or 38 or 18 => "目标文件系统不支持安全无覆盖提交，请选择受支持的本地 NAS 文件系统。",
             _ => "目标目录 I/O 失败，未能安全完成导出。"
         });
+    }
+    // fnOS private mount paths may contain trusted platform symlinks.
+    internal static void SyncPrivate(string path)
+    {
+        using var fd = Checked(open(path, DirectoryFlag | CloseExec));
+        if (fsync(fd) != 0) Fail();
     }
     public static ExportDirectory Open(string path)
     {

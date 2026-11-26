@@ -44,7 +44,7 @@ public static partial class Composition
         if (tags.Split(' ').Any(t => t == "唱歌" || t.Equals("sing", StringComparison.OrdinalIgnoreCase) || t.Equals("singing", StringComparison.OrdinalIgnoreCase)))
             throw new InputError("唱歌、sing、singing 请使用预置音色的独立唱歌开关。");
     }
-    public static ScriptPlan Plan(ScriptRequest r)
+    internal static ScriptPlan Parameters(ScriptRequest r)
     {
         _ = Model(r.SynthesisMode);
         if (r.Text is null || r.Style is null || r.Character is null || r.Scene is null || r.Direction is null || r.Tags is null || r.VoiceDescription is null)
@@ -58,8 +58,6 @@ public static partial class Composition
             throw new InputError("音色描述仅适用于 VoiceDesign。");
         if (r.SynthesisMode == "clone" ? !Storage.ValidId(r.SourceSampleId ?? "") : r.SourceSampleId != null)
             throw new InputError("VoiceClone 必须提供合法样本 ID；其他模式不接受参考样本。");
-        if (string.IsNullOrWhiteSpace(r.Text) || Encoding.UTF8.GetByteCount(r.Text) > 60000)
-            throw new InputError("正文不能为空，且最多 60000 UTF-8 字节。");
         if (!Voices.Contains(r.Voice) || r.Mode is not ("natural" or "director" or "combined"))
             throw new InputError("音色或风格模式无效。");
         if (r.SegmentCharacters is < 50 or > 3000) throw new InputError("分段目标必须为 50–3000 个文本元素。");
@@ -70,6 +68,15 @@ public static partial class Composition
         if (r.SynthesisMode == "design") user = string.Join("\n", new[] { r.VoiceDescription, user }.Where(x => x.Length > 0));
         if (Encoding.UTF8.GetByteCount(user) > 6000) throw new InputError("风格指令最多 6000 UTF-8 字节。");
         var prefix = (r.Singing ? "(唱歌)" : "") + (r.Tags.Length > 0 ? "(" + r.Tags + ")" : "");
+        return new(user, prefix, []);
+    }
+
+    public static ScriptPlan Plan(ScriptRequest r)
+    {
+        var settings = Parameters(r);
+        var (user, prefix, _) = settings;
+        if (string.IsNullOrWhiteSpace(r.Text) || Encoding.UTF8.GetByteCount(r.Text) > 60000)
+            throw new InputError("短文本正文不能为空，且最多 60000 UTF-8 字节。更长的作品请分块上传。");
         int budget = 3000 - Encoding.UTF8.GetByteCount(prefix);
         if (r.SynthesisMode == "design")
         {
@@ -118,7 +125,6 @@ public static partial class Composition
             if (end < units.Count && boundary > pos) end = boundary;
             if (end == pos) throw new InputError("无法安全分段。");
             result.Add(string.Concat(units.GetRange(pos, end - pos))); pos = end;
-            if (result.Count > 80) throw new InputError("最多允许 80 段，请减少正文或提高分段目标。");
         }
         return new(user, prefix, result.ToArray());
     }

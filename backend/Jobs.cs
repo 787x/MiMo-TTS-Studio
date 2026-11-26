@@ -2,7 +2,7 @@ namespace Studio;
 
 public sealed record JobView(string Id, string State, int Completed, int Total, string? AssetId, string? Error,
     string SynthesisMode = "preset", GenerationSummary? Parameters = null);
-public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime lifetime)
+public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime lifetime, GenerationSlot? sharedSlot = null)
 {
     private sealed class Job(string owner, int total)
     {
@@ -10,6 +10,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
         public JobView View = new(Guid.NewGuid().ToString("N"), "running", 0, total, null, null);
         public CancellationTokenSource Cancel = new();
     }
+    internal GenerationSlot Slot { get; } = sharedSlot ?? new();
     private readonly object gate = new();
     private readonly Dictionary<string, Job> jobs = [];
     private Task? current;
@@ -28,6 +29,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
             var summary = new GenerationSummary(request.SynthesisMode, Composition.Model(request.SynthesisMode),
                 request.SynthesisMode == "preset" ? request.Voice : null, plan.User, plan.Prefix, plan.Segments.Length,
                 sample?.Metadata.Id, sample?.Metadata.Name);
+            if (!Slot.Enter()) throw new BusyError();
             while (jobs.Count >= 100) { var first = jobs.First(); first.Value.Cancel.Dispose(); jobs.Remove(first.Key); }
             var job = new Job(owner, plan.Segments.Length); jobs[job.View.Id] = job;
             job.View = job.View with { SynthesisMode = request.SynthesisMode, Parameters = summary };
@@ -49,7 +51,6 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
     private async Task Run(Job job, ScriptRequest request, ScriptPlan plan, string key, string? sampleDataUrl, GenerationSummary summary)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(job.Cancel.Token, lifetime.ApplicationStopping);
-        timeout.CancelAfter(TimeSpan.FromMinutes(20));
         var ct = timeout.Token;
         try
         {
@@ -80,6 +81,7 @@ public sealed class Jobs(Storage storage, Mimo mimo, IHostApplicationLifetime li
             // Never log upstream bodies, credentials, text, or raw exception messages.
             lock (gate) job.View = job.View with { State = "failed", Error = e is InputError ? e.Message : "生成失败：网络或本地存储异常。未自动重试。" };
         }
+        finally { Slot.Leave(); }
     }
 }
 public sealed class BusyError : Exception;

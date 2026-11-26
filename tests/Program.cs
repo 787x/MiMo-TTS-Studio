@@ -111,6 +111,7 @@ await Pr5Tests.Run(Check);
 Pr6Tests.Run(Check, Reject);
 await Pr7Tests.Run(Check);
 await Pr7FeedbackTests.Run(Check,args.Length==2&&args[0]=="--feedback-fixtures"?args[1]:null);
+await LongWorkTests.Run(Check, Reject);
 Console.WriteLine($"{passed} checks passed");
 
 sealed class MockMimo(byte[] wave):HttpMessageHandler
@@ -120,7 +121,7 @@ sealed class MockMimo(byte[] wave):HttpMessageHandler
  {
   Calls++;Requests.Add(await request.Content!.ReadAsStringAsync(ct));
   if(Delay)await Task.Delay(Timeout.Infinite,ct);
-  var response=new HttpResponseMessage(Status){Content=new StringContent(Raw??JsonSerializer.Serialize(new{choices=new[]{new{message=new{audio=new{data=Convert.ToBase64String(wave)}}}}}))};
+  var response=new HttpResponseMessage(Status){Content=new StringContent(Raw??JsonSerializer.Serialize(new{choices=new[]{new{finish_reason="stop",message=new{audio=new{data=Convert.ToBase64String(wave)}}}}}))};
   if(Oversized)response.Content.Headers.ContentLength=100*1024*1024;
   return response;
  }

@@ -11,7 +11,7 @@ static class Pr4Tests
   {
    var storage=new Storage(Path.Combine(root,"etc"),Path.Combine(root,"audio"),Path.Combine(root,"tmp"));
    var wave=Wave.Merge([new(24000,new byte[48000])]);
-   var tts=new ProbeHandler{Body=JsonSerializer.Serialize(new{choices=new[]{new{message=new{audio=new{data=Convert.ToBase64String(wave)}}}}})};
+   var tts=new ProbeHandler{Body=JsonSerializer.Serialize(new{choices=new[]{new{finish_reason="stop",message=new{audio=new{data=Convert.ToBase64String(wave)}}}}})};
    var chat=new ProbeHandler{Body="{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"OK\"}}]}"};
    var llm=new Llm(storage,new HttpClient(chat));var mimo=new Mimo(new HttpClient(tts));var diagnostics=new Diagnostics(storage,mimo,llm);
    DiagnosticInput Input(string service,string? sample=null)=>new(service,sample,diagnostics.Check(new(service,sample),"1000").Revision,Guid.NewGuid().ToString("N"));

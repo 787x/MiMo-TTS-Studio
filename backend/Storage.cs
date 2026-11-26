@@ -11,6 +11,7 @@ public sealed partial class Storage
     public string Data { get; }
     public string Temp { get; }
     public string Samples { get; }
+    public string WorksRoot => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Data))!, "works");
     private readonly object gate = new();
     private string ttsRevision = Guid.NewGuid().ToString("N"), llmRevision = Guid.NewGuid().ToString("N");
     private string? observedTtsKey;
@@ -131,7 +132,7 @@ public sealed partial class Storage
             Directory.Delete(Path.Combine(Data, id), true); return true;
         }
     }
-    private static void AtomicWrite(string path, byte[] bytes)
+    internal static void AtomicWrite(string path, byte[] bytes)
     {
         var temp = path + ".new";
         var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
