@@ -19,6 +19,12 @@ public static class LinuxIdentity
         if (!OperatingSystem.IsLinux() || socket.AddressFamily != AddressFamily.Unix) return null;
         uint n=12; return getsockopt((int)socket.Handle,1,17,out var c,ref n)==0 && n==12 ? c.Uid : null;
     }
+    public static (long Length, long Modified, long ModifiedNanos, long Changed, long ChangedNanos) FileRevision(FileStream file)
+    {
+        var handle = file.SafeFileHandle;
+        if (fstat((int)handle.DangerousGetHandle(), out var stat) != 0) throw new IOException("Cannot verify upload file.");
+        return (stat.Size, stat.Msec, stat.Mnsec, stat.Csec, stat.Cnsec);
+    }
     public static FileStream OpenPrivate(string path, long max)
     {
         if (!OperatingSystem.IsLinux()) throw new UnauthorizedAccessException();

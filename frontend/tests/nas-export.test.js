@@ -17,3 +17,28 @@ describe('NAS export',()=>{
  it('falls back clearly when no host bridge exists',async()=>{const {w}=await setup();await w.findAll('button').find(b=>b.text()==='前往 fnOS 应用设置授权目录').trigger('click');await flushPromises();expect(w.text()).toContain('当前页面没有 fnOS 宿主桥接');expect(w.text()).toContain('应用中心 → 已安装')})
  it('late response after unmount is discarded and copy request is aborted',async()=>{const {w,api}=await setup();let resolve;api.mockImplementationOnce(()=>new Promise(r=>resolve=r));await w.find('form').trigger('submit');const signal=api.mock.calls[1][3];w.unmount();expect(signal.aborted).toBe(true);resolve({directory:'/target',fileName:'late.wav',bytes:44});await flushPromises()})
 })
+
+it('replays the same chapter export operation after a lost response and advances on receipt',async()=>{
+ const chapter={path:'/works/response-lost',chapter:0}
+ sessionStorage.clear()
+ const posts=[]
+ const api=vi.fn(async (path,method,body)=>{
+  if(path==='/export/targets')return [{id:'opaque',path:'/vol1/1000/声音',writable:true}]
+  if(method==='POST'){
+   posts.push({path,...body})
+   if(posts.length===1)throw Error('response lost after commit')
+   return {bytes:48044}
+  }
+  return {items:[{number:0},{number:1}],nextOffset:null}
+ })
+ const w=mount(NasExport,{props:{assetId:'',chapter,api}});wrappers.push(w)
+ await flushPromises()
+ await w.find('form').trigger('submit');await flushPromises()
+ expect(w.get('[role=alert]').text()).toContain('response lost')
+ await w.find('form').trigger('submit');await flushPromises()
+ expect(posts.map(p=>p.path)).toEqual(['/works/response-lost/volumes/0/export','/works/response-lost/volumes/0/export','/works/response-lost/volumes/1/export'])
+ expect(posts[0]).toEqual(posts[1])
+ expect(posts[2].operationId).toBe(posts[0].operationId)
+ expect(w.text()).toContain('本章已导出 2 卷')
+ sessionStorage.clear()
+})

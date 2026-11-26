@@ -129,7 +129,7 @@ static class Pr7FeedbackTests
             if(Mode=="delay")await Task.Delay(Timeout.Infinite,ct);
             if(Mode=="failure")return new(HttpStatusCode.Unauthorized){Content=new StringContent("RAW_UPSTREAM_SENTINEL feedback-private-key")};
             var wave=Wave.Merge([new(24000,new byte[24000])]);
-            return new(HttpStatusCode.OK){Content=new StringContent(JsonSerializer.Serialize(new{choices=new[]{new{message=new{audio=new{data=Convert.ToBase64String(wave)}}}}}))};
+            return new(HttpStatusCode.OK){Content=new StringContent(JsonSerializer.Serialize(new{choices=new[]{new{finish_reason="stop",message=new{audio=new{data=Convert.ToBase64String(wave)}}}}}))};
         }
     }
     sealed class TestLifetime:IHostApplicationLifetime,IDisposable

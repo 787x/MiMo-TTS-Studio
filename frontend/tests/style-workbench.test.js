@@ -9,7 +9,7 @@ async function setup(){
  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
   const path=url.replace('/app/mimotts/api',''),body=options.body?JSON.parse(options.body):null;calls.push({path,method:options.method,body})
   if(path==='/jobs'&&body)generated=true
-  const result=path==='/session'?{csrf:'test',configured:true,voices:['mimo_default']}:path==='/preview'?{prefix:(body.tags?'('+body.tags+')':''),user:'',segments:[body.text],assistant:[(body.tags?'('+body.tags+')':'')+body.text]}:path==='/jobs'&&body?{id:'job',state:'running',assetId:null,synthesisMode:body.synthesisMode}:path==='/jobs/job'?{id:'job',state:'succeeded',assetId:'result',synthesisMode:'preset'}:path==='/assets'&&generated?[{id:'result',title:'测试结果',voice:'mimo_default',bytes:100,synthesisMode:'preset',parameters:{prefix:'(温柔 清亮 上海话)'}}]:[]
+  const result=path.startsWith('/works/')?{items:[],nextOffset:null}:path==='/session'?{csrf:'test',configured:true,voices:['mimo_default']}:path==='/preview'?{prefix:(body.tags?'('+body.tags+')':''),user:'',segments:[body.text],assistant:[(body.tags?'('+body.tags+')':'')+body.text]}:path==='/jobs'&&body?{id:'job',state:'running',assetId:null,synthesisMode:body.synthesisMode}:path==='/jobs/job'?{id:'job',state:'succeeded',assetId:'result',synthesisMode:'preset'}:path==='/assets'&&generated?[{id:'result',title:'测试结果',voice:'mimo_default',bytes:100,synthesisMode:'preset',parameters:{prefix:'(温柔 清亮 上海话)'}}]:[]
   return {ok:true,status:200,json:async()=>result}
  }))
  const w=mount(App);wrappers.push(w);await flushPromises();return {w,calls}

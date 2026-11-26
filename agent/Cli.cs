@@ -21,6 +21,12 @@ TTS fields also accept flags: --synthesis-mode, --voice, --voice-description,
        --source-sample-id, --style, --mode natural|director|combined,
        --character, --scene, --direction, --tags, --singing true|false,
        --split true|false, --segment-characters 50..3000.
+Long works: create_work --title TITLE, upload_work_file --id ID --input UTF8_FILE
+            prepare_work --id ID --bytes N --sha256 HASH [TTS parameters]
+            control_work --id ID --action start|pause|resume|cancel [--confirm true]
+            list_works, get_work, list_work_chapters, list_work_volumes, preview_work
+            download_work_volume --id ID --number N --output NEW_FILE
+            export_work_volume --id ID --number N --directory-id ID --file-name NAME
 CLI file transfer: import_sample --input FILE --name NAME --format wav|mp3
                    download_asset --id ID --output NEW_FILE
 Tools: get_capabilities, list_voices, list_style_presets, list_inline_tags,
@@ -67,7 +73,7 @@ JSON result: success/code/data. Exit: 0 success, 2 input, 3 permission, 4 servic
                 default:
                     string key=Camel(option[2..]);bool field=Catalog.Fields.ContainsKey(key);var target=field?parameters:args;
                     if(target.ContainsKey(key))throw new ArgumentException();
-                    target[key]=key is "singing" or "split" or "clear"?JsonValue.Create(bool.Parse(value)):key is "segmentCharacters" or "offset"?JsonValue.Create(int.Parse(value,System.Globalization.CultureInfo.InvariantCulture)):JsonValue.Create(value);break;
+                    target[key]=key is "singing" or "split" or "clear" or "confirm"?JsonValue.Create(bool.Parse(value)):key is "segmentCharacters" or "offset" or "bytes" or "chapter" or "number"?JsonValue.Create(long.Parse(value,System.Globalization.CultureInfo.InvariantCulture)):JsonValue.Create(value);break;
             }
         }
         if(tool=="mcp")
@@ -83,7 +89,7 @@ JSON result: success/code/data. Exit: 0 success, 2 input, 3 permission, 4 servic
         }
         if(parameters.Count>0||seen.Contains("--parameters"))args["parameters"]=parameters;
         if(wait&&tool is not("synthesize_audio" or "get_job_status"))throw new ArgumentException();
-        if((input!=null)!=(tool=="import_sample")||(output!=null)!=(tool=="download_asset"))throw new ArgumentException();
+        if((input!=null)!=(tool is "import_sample" or "upload_work_file")||(output!=null)!=(tool is "download_asset" or "download_work_volume"))throw new ArgumentException();
         var element=Wire.Element(args);if(!help)Catalog.Validate(element,Catalog.Find(tool).Schema);
         return new(tool,element,socket,credential,wait,timeout,input,output,help);
     }

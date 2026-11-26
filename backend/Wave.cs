@@ -70,12 +70,31 @@ public static class Wave
         if (segments.Any(s => s.Rate != rate)) throw new InputError("分段采样率不同，无法安全合并；请重新检查服务响应。");
         long length = segments.Sum(s => (long)s.Data.Length);
         if (length > MaxBytes - 44) throw new InputError("合成结果超出 64 MiB 上限。");
-        using var stream = new MemoryStream(); using var w = new BinaryWriter(stream);
+        var wave = new byte[checked((int)length + 44)];
+        Header(rate, length).CopyTo(wave, 0);
+        int offset = 44;
+        foreach (var segment in segments)
+        {
+            segment.Data.CopyTo(wave, offset);
+            offset += segment.Data.Length;
+        }
+        return wave;
+    }
+    internal static byte[] Header(int rate, long length)
+    {
+        using var stream = new MemoryStream(44);
+        using var w = new BinaryWriter(stream);
         w.Write("RIFF"u8); w.Write((uint)(36 + length)); w.Write("WAVEfmt "u8); w.Write(16);
         w.Write((ushort)1); w.Write((ushort)1); w.Write(rate); w.Write(rate * 2); w.Write((ushort)2); w.Write((ushort)16);
         w.Write("data"u8); w.Write((uint)length);
-        foreach (var s in segments) w.Write(s.Data);
         return stream.ToArray();
+    }
+    internal static bool NormalizedHeader(Stream stream, int rate, long bytes)
+    {
+        Span<byte> actual = stackalloc byte[44];
+        return bytes is > 44 and <= MaxBytes && (bytes & 1) == 0 && rate is >= 8000 and <= 96000 &&
+            stream.ReadAtLeast(actual, actual.Length, throwOnEndOfStream: false) == 44 &&
+            actual.SequenceEqual(Header(rate, bytes - 44));
     }
     private static ushort U16(byte[] b, int p) => BinaryPrimitives.ReadUInt16LittleEndian(b.AsSpan(p));
     private static uint U32(byte[] b, int p) => BinaryPrimitives.ReadUInt32LittleEndian(b.AsSpan(p));

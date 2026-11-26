@@ -2,13 +2,16 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Studio.Agent;
 namespace Studio;
-public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics diagnostics,NasExport exports,AgentStore store)
+public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics diagnostics,NasExport exports,AgentStore store,Works? works = null)
 {
     readonly Dictionary<string,(string Hash,string Job)> submissions=[];
     static object Job(JobView j)=>new{j.Id,j.State,j.Completed,j.Total,j.AssetId,error=j.Error==null?null:"generation_failed",j.SynthesisMode};
     static object AssetView(Asset a)=>new{a.Id,a.Created,a.Saved,a.Bytes,a.SynthesisMode,a.DurationSeconds,a.SampleEligible,a.SourceSampleId,format="wav",channels=1,bits=16};
     static object SampleView(VoiceSample s)=>new{s.Id,s.Name,s.Source,s.Format,s.Mime,s.Bytes,s.DurationSeconds,s.SampleRate,s.Channels,s.Created,s.SourceAssetId};
     static T Found<T>(T? item) where T:class=>item??throw new InputError("资源不存在或无权访问。");
+    Works WorkService => works ?? throw new InputError("长篇服务不可用。");
+    static long Position(JsonElement a, string name) => a.TryGetProperty(name, out var value) ? value.GetInt64() : 0;
+    static string? Optional(JsonElement a, string name) => a.TryGetProperty(name, out var value) ? value.GetString() : null;
     static string Str(JsonElement a,string name)=>a.GetProperty(name).GetString()??throw new ArgumentException();
     static object Page<T>(T[] values,JsonElement a,Func<T,object> view)
     {int offset=a.TryGetProperty("offset",out var p)?p.GetInt32():0;var items=values.Skip(offset).Take(100).Select(view).ToArray();return new{items,nextOffset=offset+items.Length<values.Length?(int?)(offset+items.Length):null};}
@@ -22,7 +25,7 @@ public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics
             // All synchronous side effects and submission admission occur under the grant/revocation lock.
             switch(request.Tool)
             {
-                case "get_capabilities":result=new{version=Wire.Version,scopes=g.View.Scopes,tools=Catalog.Tools.Where(t=>g.View.Scopes.Contains(t.Scope)).Select(t=>t.Name),maxTextUtf8=60000,maxJson=Wire.MaxJson,concurrency=1,jobMinutes=20,idempotency="TTS only; 256 records until backend restart; never automatic retry"};break;
+                case "get_capabilities":result=new{version=Wire.Version,scopes=g.View.Scopes,tools=Catalog.Tools.Where(t=>g.View.Scopes.Contains(t.Scope)).Select(t=>t.Name),maxTextUtf8=60000,maxWorkChunkBytes=Works.ChunkBytes,maxJson=Wire.MaxJson,concurrency=1,idempotency="TTS only; 256 records until backend restart; never automatic retry"};break;
                 case "list_voices":result=Composition.Voices;break;
                 case "list_style_presets":result=StyleCatalog.Categories;break;
                 case "list_inline_tags":result=Creative.Labels;break;
@@ -49,6 +52,24 @@ public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics
                         if(submissions.Count>=256)throw new BusyError();
                     }
                     ct.ThrowIfCancellationRequested();var job=jobs.Start(owner,r);if(key!=null)submissions.Add(key,(hash!,job.Id));result=new{job=job.Id,replayed=false};break;
+                case "create_work": result = WorkService.Create(owner, new(Str(a,"title"), Optional(a,"id"))); break;
+                case "upload_work_chunk":
+                    result = WorkService.Upload(Id(), owner, Position(a,"offset"), Convert.FromBase64String(Str(a,"data")), Str(a,"sha256")); break;
+                case "prepare_work":
+                    result = WorkService.Prepare(Id(), owner, new(AgentStore.Resolve(g,a), Position(a,"bytes"), Optional(a,"sha256"))); break;
+                case "get_work": result = WorkService.Get(Id(), owner); break;
+                case "list_works": result = WorkService.List(owner, (int)Position(a,"offset")); break;
+                case "preview_work": result = WorkService.Preview(Id(), owner, Position(a,"offset")); break;
+                case "list_work_chapters": result = WorkService.Chapters(Id(), owner, Position(a,"offset")); break;
+                case "list_work_volumes":
+                    result = WorkService.Playlist(Id(), owner, Position(a,"offset"), a.TryGetProperty("chapter", out var chapter) ? chapter.GetInt64() : null); break;
+                case "control_work":
+                    ct.ThrowIfCancellationRequested();
+                    result = WorkService.Control(Id(), owner, new(Str(a,"action"), a.TryGetProperty("confirm", out var confirm) && confirm.GetBoolean())); break;
+                case "delete_work": WorkService.Delete(Id(), owner); result = new { deleted = true }; break;
+                // CLI uses individually authorized chunk writes. The upload file
+                // itself lives on the CLI side and never crosses as a path.
+                case "upload_work_file": result = WorkService.Get(Id(), owner); break;
                 case "list_jobs":result=Page(jobs.List(owner),a,Job);break;
                 case "get_job_status":result=Job(Found(jobs.Get(Id(),owner)));break;
                 case "cancel_job":result=Job(Found(jobs.Cancel(Id(),owner)));break;
@@ -76,10 +97,18 @@ public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics
         var a=request.Arguments;string owner=grant.View.Owner;
         switch(request.Tool)
         {
+            case "bind_work_upload":
+                return AgentReply.Ok(await WorkService.BindUpload(Str(a,"id"), owner,
+                    new(Position(a,"bytes"), Str(a,"sha256"), Position(a,"offset"), Str(a,"prefixSha256")), ct,
+                    commit => store.Authorized(request.Credential, "generate", _ => commit())));
             case "list_nas_export_targets":return AgentReply.Ok((await exports.Targets(owner,ct)).Select(t=>new{t.Id,t.Writable,t.Reason}));
             case "export_audio_to_nas":
                 var receipt=await exports.Copy(Str(a,"id"),owner,new(Str(a,"directoryId"),Str(a,"fileName")),ct);
                 return AgentReply.Ok(new{receipt.FileName,receipt.Bytes});
+            case "export_work_volume":
+                var workReceipt = await exports.Copy(owner, new(Str(a,"directoryId"),Str(a,"fileName")),
+                    () => WorkService.OpenVolume(Str(a,"id"), owner, Position(a,"number")), ct);
+                return AgentReply.Ok(new { workReceipt.FileName, workReceipt.Bytes });
             case "probe_service":
                 var input=Diagnostic(a);var check=diagnostics.Check(input,owner);
                 return ProbeReply(await diagnostics.Run(input with{Revision=check.Revision,Id=Guid.NewGuid().ToString("N")},owner,ct));
@@ -91,7 +120,11 @@ public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics
     }
     internal static AgentReply ProbeReply(DiagnosticResult result)=>result.State=="succeeded"?AgentReply.Ok(result):
         new(false,result.State switch{"expired"=>"probe_expired","canceled"=>"canceled",_=>"probe_failed"},Wire.Element(result));
-    public FileStream Download(AgentRequest request)=>store.Authorized(request.Credential,"read",g=>Found(storage.Open(Str(request.Arguments,"id"),g.View.Owner)));
+    public Stream Download(AgentRequest request) => store.Authorized(request.Credential, "read", g =>
+        request.Tool == "download_work_volume"
+            ? WorkService.OpenVolume(Str(request.Arguments,"id"), g.View.Owner, Position(request.Arguments,"number")).File
+            : Found(storage.Open(Str(request.Arguments,"id"), g.View.Owner)));
+
 }
 public sealed class AgentConflict:Exception;
 public static class StyleCatalog

@@ -41,6 +41,8 @@ builder.Services.AddSingleton(FnOsDirectories.Create());
 builder.Services.AddSingleton<NasExport>();
 builder.Services.AddSingleton(new Mimo(new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(15) }) { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton<Jobs>();
+builder.Services.AddSingleton<Works>();
+builder.Services.AddHostedService(services => services.GetRequiredService<Works>());
 builder.Services.AddSingleton(new Llm(storage, new HttpClient(Llm.Handler()) { Timeout = Timeout.InfiniteTimeSpan }));
 builder.Services.AddSingleton<Diagnostics>();
 builder.Services.AddSingleton(new AgentStore(Path.Combine(root, "agent")));
@@ -72,6 +74,7 @@ app.Use(async (context, next) =>
         if (context.Request.ContentLength > limit) { context.Response.StatusCode = 413; return; }
     }
     try { await next(context); }
+    catch (LongWorkRequired e) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = e.Message, code = "long_work_required" }); }
     catch (InputError e) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = e.Message }); }
     catch (BusyError) { context.Response.StatusCode = 409; await context.Response.WriteAsJsonAsync(new { error = "已有生成任务运行中，请等待或取消。" }); }
     catch (BadHttpRequestException) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = "请求体无效或过大。" }); }
@@ -107,6 +110,7 @@ app.MapPost("/api/jobs", (HttpContext c, ScriptRequest request, Jobs jobs) => Re
 app.MapGet("/api/jobs", (HttpContext c, Jobs jobs) => jobs.List(Owner(c)));
 app.MapGet("/api/jobs/{id}", (HttpContext c, string id, Jobs jobs) => jobs.Get(id, Owner(c)) is { } job ? Results.Ok(job) : Results.NotFound());
 app.MapPost("/api/jobs/{id}/cancel", (HttpContext c, string id, Jobs jobs) => jobs.Cancel(id, Owner(c)) is { } job ? Results.Ok(job) : Results.NotFound());
+app.MapWorks();
 app.MapGet("/api/assets", (HttpContext c) => storage.List(Owner(c)));
 app.MapGet("/api/export/targets", (HttpContext c, NasExport exports) => exports.Targets(Owner(c), c.RequestAborted));
 app.MapPost("/api/assets/{id}/export", (HttpContext c, string id, ExportInput input, NasExport exports) => exports.Copy(id, Owner(c), input, c.RequestAborted));

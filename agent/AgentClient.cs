@@ -4,6 +4,7 @@ using Studio.Agent;
 namespace MiMoStudio.Agent;
 public sealed class AgentClient(string socketPath,string credentialFile)
 {
+    private static readonly JsonSerializerOptions TransportJson = new(Wire.Json) { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     AgentCredential Credential()
     {
         using var f=LinuxIdentity.OpenPrivate(credentialFile,4096);
@@ -18,7 +19,7 @@ public sealed class AgentClient(string socketPath,string credentialFile)
             using(var connect=CancellationTokenSource.CreateLinkedTokenSource(ct)){connect.CancelAfter(TimeSpan.FromSeconds(5));await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath),connect.Token);}
             if(LinuxIdentity.Peer(socket)!=LinuxIdentity.getuid())throw new UnauthorizedAccessException();
             using var stream=new NetworkStream(socket,false);
-            byte[] request=JsonSerializer.SerializeToUtf8Bytes(new AgentRequest(Wire.Version,credential,tool,args),Wire.Json);
+            byte[] request=JsonSerializer.SerializeToUtf8Bytes(new AgentRequest(Wire.Version,credential,tool,args),TransportJson);
             await Wire.Write(stream,request,128*1024,ct);
             if(upload!=null)await Wire.Write(stream,upload,7400000,ct);
             var reply=JsonSerializer.Deserialize<AgentReply>(await Wire.Read(stream,Wire.MaxJson,ct),Wire.Json)??throw new InvalidDataException();

@@ -11,6 +11,7 @@ public sealed partial class Storage
     public string Data { get; }
     public string Temp { get; }
     public string Samples { get; }
+    public string WorksRoot => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Data))!, "works");
     private readonly object gate = new();
     private string ttsRevision = Guid.NewGuid().ToString("N"), llmRevision = Guid.NewGuid().ToString("N");
     private string? observedTtsKey;
@@ -58,6 +59,21 @@ public sealed partial class Storage
             if (key.Length is < 8 or > 512 || key.Any(c => c < 33 || c > 126)) throw new InputError("API Key 必须为 8–512 个可打印 ASCII 字符，不含空白。");
             AtomicWrite(KeyPath, System.Text.Encoding.UTF8.GetBytes(key));
             ttsRevision=Guid.NewGuid().ToString("N");
+        }
+    }
+    internal byte[] ExportKey()
+    {
+        lock (gate)
+        {
+            string path = Path.Combine(Config, "export-key");
+            if (!File.Exists(path))
+            {
+                AtomicWrite(path, System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+                if (OperatingSystem.IsLinux()) ExportDirectory.SyncPrivate(Config);
+            }
+            if (OperatingSystem.IsLinux()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            var key = File.ReadAllBytes(path);
+            return key.Length == 32 ? key : throw new InputError("无法读取 NAS 导出回执密钥。");
         }
     }
     public bool HasSpace(long reservation = Wave.MaxBytes)
@@ -131,7 +147,7 @@ public sealed partial class Storage
             Directory.Delete(Path.Combine(Data, id), true); return true;
         }
     }
-    private static void AtomicWrite(string path, byte[] bytes)
+    internal static void AtomicWrite(string path, byte[] bytes)
     {
         var temp = path + ".new";
         var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };

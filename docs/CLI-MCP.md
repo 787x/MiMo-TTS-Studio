@@ -56,7 +56,7 @@ agent cancel_job --id JOB_ID
 {"success":true,"code":"ok","data":{"job":"服务端JobID","replayed":false}}
 ```
 
-默认提交后立即退出；`--wait` 轮询同一个 Job，终态为 succeeded 才退出 0。Job 状态包括 running/canceling/succeeded/canceled/failed。等待超时、Ctrl+C、CLI 退出、MCP 断开均不隐式取消成功提交的 TTS；使用 `cancel_job` 明确取消并查询至终态。后台沿用全应用一个 TTS 槽、20 分钟总预算、最多 80 段和 64 MiB 成功 WAV。取消旧 ID 不影响新 Job，其他用户的 Job 不可见。
+默认提交后立即退出；`--wait` 轮询同一个 Job，终态为 succeeded 才退出 0。Job 状态包括 running/canceling/succeeded/canceled/failed。等待超时、Ctrl+C、CLI 退出、MCP 断开均不隐式取消成功提交的 TTS；使用 `cancel_job` 明确取消并查询至终态。短文本接口与长篇作品共用一个 TTS 槽。短文本接口返回单个 WAV，最多 64 MiB。超过单 WAV 估算预算会在调用 MiMo 前返回 long_work_required，可改用长篇工具。取消旧 ID 不影响新 Job，其他用户的 Job 不可见。
 
 | 退出码 | code / 意义 |
 | --- | --- |
@@ -213,3 +213,16 @@ Agent IPC v1 是专用0600 Unix Socket，一连接一请求，4个固定服务 w
 认证/读取头预算5秒，操作总预算4分钟。操作预算到期且尚未尝试写响应时，使用独立、最多2秒且受应用停止约束的发送预算尽力返回完整 timeout；不延长业务执行或重新请求上游。已知断开的连接、应用关闭或已尝试写入（可能部分帧）的连接直接清理，不追加第二份响应；不可写客户端也不会无限等待。因此真实断连/部分写入仍可能返回连接不可用，客户端自身等待预算也保持独立。导入另有7.4MB受限二进制帧，下载按已验证长度最多64MiB分块传输。CLI连接超时5秒，`--timeout` 总预算1–1200秒（默认1200）；后端仍有独立操作/Jobs/LLM/检测/NAS导出时限。上传/下载失败无自动重试。服务协议不兼容返回 incompatible_service，需要更新客户端与服务。旧服务没有 agent.sock 会返回 service_unavailable。应用停止/升级清理 Agent Socket，下次启动重建；只有新启动的服务接纳请求。
 
 Agent 私有持久状态位于 TRIM_PKGVAR/agent，升级保留；保留数据卸载保留此目录，重装后重新收紧权限；确认删除数据的卸载仅删除本应用私有 agent/audio/samples/保留配置目录。正常保留不会改变旧 TTS/LLM Key、样本、资产或 NAS 授权；服务重启仍沿用原有进程内 Jobs 历史消失的边界。
+
+
+## 长篇作品
+
+长篇工具沿用现有授权和账号归属。创建、上传、准备与运行操作需要 `generate`。查询和下载需要 `read`，导出需要 `export`，删除需要 `delete`。
+
+1. `create_work --title TITLE` 返回作品 ID。可传入 32 位 UUID 作为 `--id`，用于重试同一次创建。
+2. `upload_work_file --id ID --input FILE` 以 64 KiB 分块读取显式选择的私有 TXT，返回 `bytes` 和 `sha256`。中断后用同一文件重复执行，CLI 在本地计算哈希并从服务端确认的位置继续。MCP 可先用 `bind_work_upload` 绑定总长度、完整 SHA-256、已确认的 offset 和对应 prefixSha256，再使用 `upload_work_chunk`，逐块传入 `id`、十进制整数 `offset`、Base64 `data` 和分块 `sha256`，按返回的已确认字节数继续。
+3. `prepare_work --id ID --bytes N --sha256 HASH` 封存正文并在后台建立索引。可传入既有 `--preset` 或 TTS 参数。用 `get_work` 查询 `ready`，用 `preview_work` 和 `list_work_chapters` 分页核对正文、章节和前缀。
+4. `control_work --id ID --action start` 启动生成。`pause` 在当前段结束后暂停，`resume` 继续，`cancel` 取消。只有明确接受可能的重复计费时，才对 `uncertain` 状态使用 `--action resume --confirm true`。
+5. `list_work_volumes --id ID` 列出分卷；可用 `--chapter N` 过滤，按 `nextOffset` 翻页。编号和章节从 0 开始。使用 `download_work_volume --id ID --number N --output NEW_FILE` 下载 WAV，或用 `export_work_volume --id ID --number N --directory-id DIRECTORY --file-name NAME` 导出。
+
+MCP 消息仅承载有界分块、分页结果和控制操作。CLI 的 `--input` 路径只由本地 CLI 打开。上传允许 Ctrl+C 停止，`--timeout` 对各分块调用单独计时。

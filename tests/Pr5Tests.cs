@@ -35,12 +35,37 @@ static class Pr5Tests
         var receipt = await exports.Copy(asset.Id, "1000", input, default);
         check(receipt.Bytes == bytes.Length && File.ReadAllBytes(Path.Combine(target, "first.wav")).SequenceEqual(bytes), "bounded export target bytes match source hash");
         check(!storage.Get(asset.Id, "1000")!.Saved && File.ReadAllBytes(Path.Combine(storage.Data, asset.Id, "audio.wav")).SequenceEqual(bytes), "export leaves source bytes and Saved unchanged");
+        var batch = new ExportInput(input.DirectoryId, "chapter-1.wav", Guid.NewGuid().ToString("N"));
+        Task<ExportReceipt> Chapter(NasExport service, ExportInput request, string source = "work/0", string owner = "1000") =>
+            service.Copy(owner, request, () => (new MemoryStream(bytes), bytes.LongLength), default, source);
+        // Simulate loss after linkat/fsync, including a restarted server and a
+        // stale client cursor. A fresh request must acknowledge the same inode.
+        _ = await Chapter(exports, batch);
+        var committedPath = Path.Combine(target, batch.FileName);
+        File.SetLastWriteTimeUtc(committedPath, DateTime.UtcNow.AddDays(-1));
+        var writeTime = File.GetLastWriteTimeUtc(committedPath);
+        var restarted = new NasExport(storage, new(new HttpClient(handler), () => "test-platform-token"));
+        check((await Chapter(restarted, batch)).Bytes == bytes.Length && File.GetLastWriteTimeUtc(committedPath) == writeTime,
+            "lost batch success is reconciled after restart without rewriting the target");
+        check((await Chapter(restarted, batch with { FileName = "chapter-2.wav" }, "work/1")).Bytes == bytes.Length,
+            "batch can continue after confirming the previous volume");
+        await Deny(() => Chapter(restarted, batch with { OperationId = Guid.NewGuid().ToString("N") }), "same name from a different export is rejected");
+        await Deny(() => Chapter(restarted, batch with { FileName = input.FileName }), "identical WAV bytes without a receipt are rejected");
+        await Deny(() => Chapter(restarted, batch, "work/1"), "receipt is bound to the source volume");
+        handler.Paths = [outside];
+        await Deny(() => Chapter(restarted, batch), "revoked authorization cannot reconcile a previous export");
+        handler.Paths = [target];
+        using (var changed = new FileStream(committedPath, FileMode.Open, FileAccess.Write)) { changed.Position = 44; changed.WriteByte(1); }
+        await Deny(() => Chapter(restarted, batch), "modified WAV with original receipt is rejected");
         File.SetUnixFileMode(root,UnixFileMode.UserExecute);
         await exports.Copy(asset.Id,"1000",input with{FileName="traverse.wav"},default);
         check(File.Exists(Path.Combine(target,"traverse.wav")),"traverse-only ancestors work without broadening parent permissions");
         File.SetUnixFileMode(root,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
         await Deny(() => exports.Copy(asset.Id, "1000", input, default), "existing file is never replaced");
+        int ownerChecks = handler.Owners.Count;
         await Deny(() => exports.Copy(asset.Id, "2000", input with { FileName = "other.wav" }, default), "another user's asset is denied");
+        check(handler.Owners.Count > ownerChecks && handler.Owners.Skip(ownerChecks).All(uid => uid == 2000),
+            "cross-owner request checks its own live fnOS UID");
         await Deny(() => exports.Copy(asset.Id, "1000", input with { DirectoryId = target }, default), "absolute directory supplied as ID is denied");
         handler.Paths = [outside];
         await Deny(() => exports.Copy(asset.Id, "1000", input, default), "revoked cached directory ID denied");
@@ -92,7 +117,7 @@ static class Pr5Tests
         Directory.CreateDirectory(target+"-adjacent");
         var adjacent=await exports.Targets("1000",default);
         check(adjacent.Length==1 && adjacent[0].Path==target+"-adjacent", "exact roots only: private ancestors and system paths rejected");
-        check(handler.Requests.All(r=>r.GetProperty("appName").GetString()=="mimotts") && handler.Owners.All(uid=>uid==1000), "platform protocol uses app identity and trusted current UID");
+        check(handler.Requests.All(r=>r.GetProperty("appName").GetString()=="mimotts") && handler.Owners.All(uid=>uid is 1000 or 2000), "platform protocol uses app identity and trusted current UID");
         if(Environment.GetEnvironmentVariable("MIMO_EXPORT_CROSS_ROOT") is {} cross)
         {
             handler.Paths=[cross];var id=(await exports.Targets("1000",default))[0].Id;

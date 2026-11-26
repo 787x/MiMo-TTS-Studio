@@ -130,7 +130,7 @@ static class Pr2Tests
         {
             Payloads.Add(JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(ct)));
             Entered.TrySetResult(); await Resume.Task.WaitAsync(ct);
-            return new(HttpStatusCode.OK) { Content = new StringContent(Fail ? "{}" : JsonSerializer.Serialize(new { choices = new[] { new { message = new { audio = new { data = Convert.ToBase64String(wave) } } } } })) };
+            return new(HttpStatusCode.OK) { Content = new StringContent(Fail ? "{}" : JsonSerializer.Serialize(new { choices = new[] { new { finish_reason = "stop", message = new { audio = new { data = Convert.ToBase64String(wave) } } } } })) };
         }
     }
     private sealed class Lifetime : IHostApplicationLifetime
