@@ -74,6 +74,7 @@ app.Use(async (context, next) =>
         if (context.Request.ContentLength > limit) { context.Response.StatusCode = 413; return; }
     }
     try { await next(context); }
+    catch (LongWorkRequired e) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = e.Message, code = "long_work_required" }); }
     catch (InputError e) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = e.Message }); }
     catch (BusyError) { context.Response.StatusCode = 409; await context.Response.WriteAsJsonAsync(new { error = "已有生成任务运行中，请等待或取消。" }); }
     catch (BadHttpRequestException) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = "请求体无效或过大。" }); }

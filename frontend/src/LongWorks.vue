@@ -22,6 +22,23 @@ const props = defineProps<{
 const paths = '/works/'
 const chunkBytes = 64 * 1024
 const title = ref('')
+const pendingKey = 'mimo-work-create'
+function readPending() {
+  try {
+    const id = sessionStorage.getItem(pendingKey)
+    return id && /^[a-f0-9]{32}$/.test(id) ? id : undefined
+  } catch { return undefined }
+}
+const pendingId = ref(readPending())
+let pendingTitle: string | undefined
+function rememberCreation(id?: string) {
+  pendingId.value = id
+  if (!id) pendingTitle = undefined
+  try {
+    if (id) sessionStorage.setItem(pendingKey, id)
+    else sessionStorage.removeItem(pendingKey)
+  } catch { /* Keep the same ID in this page if storage is unavailable. */ }
+}
 const selected = ref<Work>()
 const works = ref<Page<Work>>({ items: [], nextOffset: null })
 const workOffset = ref(0)
@@ -126,32 +143,60 @@ async function submit(resume = false, paste = false, pasted?: Blob) {
   const controls = settings()
   const input = pasted ?? (!paste ? file.value ?? pastedInput.value : undefined) ?? new Blob([props.parameters.text])
   if (!input.size) throw Error('请先选择 UTF-8 TXT 或在脚本编辑器粘贴正文。')
-  let work = resume ? selected.value : undefined
-  if (!work) {
-    // An ID lets the same tab reconcile a lost create response.
-    const id = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
-    work = await props.api(paths, 'POST', { id, title: title.value.trim() || (!paste && file.value?.name.slice(0, 160)) || '长篇作品' })
-    await select(work!.id)
+  let work: Work
+  if (resume) {
+    if (!selected.value) throw Error('请选择待上传作品。')
+    work = await props.api(pathFor(selected.value.id))
+  } else {
+    const existing = pendingId.value
+    const id = existing ?? bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+    pendingTitle ??= title.value.trim() || (!paste && file.value?.name.slice(0, 160)) || '长篇作品'
+    rememberCreation(id)
+    // The backend returns the original work when this same ID is replayed.
+    // A lookup also recovers the server's title after a page reload.
+    const recovered: Work | undefined = existing ? await props.api(pathFor(id)).catch(() => undefined) : undefined
+    work = recovered ?? await props.api(paths, 'POST', { id, title: pendingTitle })
+    await select(work.id)
     await list(0)
   }
-  if (!work || work.state !== 'uploading') throw Error('请选择待上传作品。')
   if (work.bytes > input.size) throw Error('请重新选择原始正文文件。')
+
   const digest = sha256.create()
-  upload.value = work.bytes
-  const id = work.id
+  let prefixSha256 = bytesToHex(digest.clone().digest())
   for (let offset = 0; offset < input.size;) {
-    if (lifetime.signal.aborted) return
-    const nextOffset = offset < work.bytes ? Math.min(work.bytes, offset + chunkBytes) : offset + chunkBytes
-    const chunk = await input.slice(offset, nextOffset).arrayBuffer()
-    digest.update(new Uint8Array(chunk))
-    const next = await putChunk(id, offset, chunk)
+    lifetime.signal.throwIfAborted()
+    const end = Math.min(input.size, offset + chunkBytes, offset < work.bytes ? work.bytes : input.size)
+    digest.update(new Uint8Array(await input.slice(offset, end).arrayBuffer()))
+    offset = end
+    if (offset === work.bytes) prefixSha256 = bytesToHex(digest.clone().digest())
+  }
+  const fullHash = bytesToHex(digest.digest())
+  const id = work.id
+  if (work.state !== 'uploading') {
+    if (pendingId.value === id && ['planning', 'ready'].includes(work.state) &&
+        work.bytes === input.size && work.sha256 === fullHash) {
+      rememberCreation()
+      return
+    }
+    throw Error('请选择待上传作品。')
+  }
+  await props.api(pathFor(id) + '/text/bind', 'POST', {
+    bytes: input.size, sha256: fullHash, offset: work.bytes, prefixSha256,
+  })
+  upload.value = work.bytes
+  for (let offset = work.bytes; offset < input.size;) {
+    lifetime.signal.throwIfAborted()
+    const end = Math.min(input.size, offset + chunkBytes)
+    const next = await putChunk(id, offset, await input.slice(offset, end).arrayBuffer())
     selected.value = next
     upload.value = next.bytes
-    offset = nextOffset
+    if (next.bytes !== end) throw Error('上传位置已变化，请重新读取服务端进度。')
+    offset = end
   }
   selected.value = await props.api(pathFor(id) + '/prepare', 'POST', {
-    parameters: controls, bytes: input.size, sha256: bytesToHex(digest.digest()),
+    parameters: controls, bytes: input.size, sha256: fullHash,
   })
+  if (pendingId.value === id) rememberCreation()
 }
 
 async function prepare() {
@@ -174,6 +219,7 @@ async function control(action: string) {
 async function remove() {
   if (!selected.value || !window.confirm('删除此作品、任务记录、原文和私有音频？已经导出的 NAS 文件将保留。')) return
   await props.api(pathFor(selected.value.id), 'DELETE')
+  if (pendingId.value === selected.value.id) rememberCreation()
   selected.value = undefined
   audioSource.value = ''
   preview.value = undefined
@@ -248,6 +294,9 @@ defineExpose({ paste: () => guarded(() => submit(false, true)), stage })
       <button class="quiet" :disabled="busy || !parameters.text.length" @click="guarded(() => submit(false, true))">用编辑器正文建立作品</button>
       <button v-if="selected?.state === 'uploading'" class="quiet" :disabled="busy" @click="guarded(() => submit(true))">继续上传原文</button>
     </div>
+    <p v-if="pendingId" class="hint">还有一次创建或上传待确认。再次提交同一正文会继续这次操作。
+      <button class="text-button" :disabled="busy" @click="rememberCreation()">改为建立另一部作品</button>
+    </p>
     <p v-if="pastedInput" class="hint">剪贴板正文 {{ pastedInput.size.toLocaleString() }} 字节</p>
     <p v-if="busy && upload" class="hint">已上传 {{ upload.toLocaleString() }} 字节</p>
     <p v-if="error" class="alert" role="alert">{{ error }}</p>

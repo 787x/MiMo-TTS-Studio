@@ -97,6 +97,10 @@ public sealed class AgentExecution(Storage storage,Jobs jobs,Llm llm,Diagnostics
         var a=request.Arguments;string owner=grant.View.Owner;
         switch(request.Tool)
         {
+            case "bind_work_upload":
+                return AgentReply.Ok(await WorkService.BindUpload(Str(a,"id"), owner,
+                    new(Position(a,"bytes"), Str(a,"sha256"), Position(a,"offset"), Str(a,"prefixSha256")), ct,
+                    commit => store.Authorized(request.Credential, "generate", _ => commit())));
             case "list_nas_export_targets":return AgentReply.Ok((await exports.Targets(owner,ct)).Select(t=>new{t.Id,t.Writable,t.Reason}));
             case "export_audio_to_nas":
                 var receipt=await exports.Copy(Str(a,"id"),owner,new(Str(a,"directoryId"),Str(a,"fileName")),ct);

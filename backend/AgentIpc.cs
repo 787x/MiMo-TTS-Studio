@@ -84,6 +84,7 @@ public sealed class AgentIpc(AgentExecution execution,AgentStore grants,IHostApp
     {
         UnauthorizedAccessException=>"permission_denied",BusyError=>"busy",AgentConflict=>"idempotency_conflict",
         OperationCanceledException=>"timeout",InputError input when input.Message.StartsWith("WAV 已完整提交",StringComparison.Ordinal)=>"export_committed_check_target",
+        LongWorkRequired=>"long_work_required",
         InputError or JsonException or ArgumentException or InvalidDataException=>"invalid_input",_=>"execution_failed"
     });
     public async Task StopAsync(CancellationToken ct){stopping.Cancel();listener?.Dispose();try{await Task.WhenAll(workers).WaitAsync(ct);}finally{if(PathName!=null)File.Delete(PathName);}}

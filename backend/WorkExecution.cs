@@ -107,6 +107,19 @@ public sealed partial class Works
 
     private SegmentAudio? Receipt(string id, long n) =>
         Read<SegmentAudio>(Path.Combine(SegmentFolder(id, n), "result", "audio.json"));
+    private SegmentAudio? CommittedReceipt(string id, long n)
+    {
+        string folder = Path.Combine(SegmentFolder(id, n), "result");
+        try
+        {
+            // File.Exists suppresses access and I/O failures. Unreadable
+            // evidence must never be interpreted as an unsent request.
+            _ = File.GetAttributes(folder);
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        return Receipt(id, n) ?? throw new InputError("已提交的音频记录缺失，未重新发送。");
+    }
+
     private string AudioPath(string id, long n) => Path.Combine(SegmentFolder(id, n), "result", "audio.wav");
 
     private void RecoverStagedResult(string id, long n)
@@ -122,6 +135,11 @@ public sealed partial class Works
     private static bool Verified(string path, SegmentAudio audio)
     {
         using var file = File.OpenRead(path);
+        return Verified(file, audio);
+    }
+
+    private static bool Verified(Stream file, SegmentAudio audio)
+    {
         if (file.Length != audio.Bytes || !Wave.NormalizedHeader(file, audio.Rate, audio.Bytes)) return false;
         file.Position = 0;
         return Convert.ToHexString(SHA256.HashData(file)).Equals(audio.Sha256, StringComparison.OrdinalIgnoreCase);
@@ -176,6 +194,7 @@ public sealed partial class Works
             WorkState state;
             lock (gate) state = Owned(id, owner);
             VerifySource(state, ct);
+            CheckResumeTail(state);
             string? sample = null;
             if (state.Parameters!.SynthesisMode == "clone")
             {
@@ -205,7 +224,7 @@ public sealed partial class Works
                     // A previous attempt may have committed audio before the
                     // metadata write failed. Reuse it before considering dispatch.
                     RecoverStagedResult(id, state.View.Completed);
-                    if (Receipt(id, state.View.Completed) is { } existing)
+                    if (CommittedReceipt(id, state.View.Completed) is { } existing)
                     {
                         if (!Verified(AudioPath(id, state.View.Completed), existing)) throw new InputError("已提交的分段音频损坏，未重新发送。");
                         Save(Advance(state, existing, index));
@@ -296,22 +315,24 @@ public sealed partial class Works
                 WorkState? state;
                 lock (gate) state = TryReadState(id);
                 if (state == null) continue;
-                if (state.View.State == "planning") { BuildIndex(state); continue; }
-                if (state.View.Total == 0) continue;
+                if (state.View.State == "planning")
+                {
+                    // Preparation owns its own slot and can scan a large source.
+                    lock (gate)
+                    {
+                        if (preparing is not { IsCompleted: false }) preparing = Task.Run(() => BuildIndex(state));
+                        else TrySave(state with { View = state.View with { State = "invalid", Error = "请重新分段。" } });
+                    }
+                    continue;
+                }
+                if (state.View.State is not ("running" or "pausing" or "canceling")) continue;
                 try
                 {
-                    VerifySource(state, stopping);
-                    CheckVolumes(state);
+                    CheckResumeTail(state);
                     long completed = state.View.Completed;
                     if (completed < state.View.Total) RecoverStagedResult(id, completed);
-                    for (long n = 0; n < completed; n++)
-                    {
-                        stopping.ThrowIfCancellationRequested();
-                        if (Receipt(id, n) is not { } audio || !Verified(AudioPath(id, n), audio))
-                            throw new InputError($"第 {n + 1} 段的已提交音频缺失或损坏。");
-                    }
                     using var index = new BinaryReader(File.OpenRead(PathFor(id, "segments.idx")));
-                    if (completed < state.View.Total && Receipt(id, completed) is { } pending)
+                    if (completed < state.View.Total && CommittedReceipt(id, completed) is { } pending)
                     {
                         if (!Verified(AudioPath(id, completed), pending)) throw new InputError($"第 {completed + 1} 段音频损坏。");
                         state = Advance(state, pending, index);

@@ -63,23 +63,26 @@ public sealed partial class Works
         }
     }
 
-    private void CheckVolumes(WorkState state)
+    // Previously published volumes are verified when read. Only an unfinished
+    // volume can contribute data to the next commit and needs early validation.
+    private void CheckResumeTail(WorkState state)
     {
         string id = state.View.Id;
-        long next = 0;
-        long previousChapter = 0;
-        for (long n = 0; n < state.View.Volumes; n++)
-        {
-            stopping.ThrowIfCancellationRequested();
-            var volume = Read<WorkVolume>(VolumePath(id, n));
-            if (volume == null || volume.Number != n || volume.First != next || volume.Last < volume.First ||
-                volume.Last >= state.View.Completed || volume.Last - volume.First >= 16 || volume.Chapter < previousChapter ||
-                volume.Bytes != VolumeBytes(id, volume.First, volume.Last))
-                throw new InputError($"第 {n + 1} 卷索引不完整。");
-            previousChapter = volume.Chapter;
-            next = volume.Last + 1;
-        }
-        if (next != state.NextVolumeStart || next > state.View.Completed) throw new InputError("分卷范围不完整。");
+        long next = state.NextVolumeStart, completed = state.View.Completed;
+        if (next < 0 || completed < next || completed > state.View.Total || completed - next > 16)
+            throw new InputError("未完成分卷的范围无效。");
+        if (state.View.Volumes > 0 &&
+            (Read<WorkVolume>(VolumePath(id, state.View.Volumes - 1)) is not { } last || last.Last != next - 1))
+            throw new InputError("最后一个已提交的分卷索引不完整。");
+        for (long n = next; n < completed; n++)
+            if (Receipt(id, n) is not { } audio || !Verified(AudioPath(id, n), audio))
+                throw new InputError($"第 {n + 1} 段的已提交音频缺失或损坏。");
+    }
+
+    private void MarkHistoricalDamage(WorkState state)
+    {
+        if (state.View.State is "succeeded" or "canceled")
+            TrySave(state with { View = state.View with { State = "damaged", Error = "已保存的分卷或音频校验失败。" } });
     }
 
     public async Task WriteChapter(string id, string owner, long chapter, Stream destination, CancellationToken ct)
@@ -122,15 +125,16 @@ public sealed partial class Works
     {
         lock (gate)
         {
-            var view = Owned(id, owner).View;
+            var state = Owned(id, owner);
+            var view = state.View;
             if (view.State == "damaged" || number < 0 || number >= view.Volumes) throw new InputError("分卷不存在或无法读取。");
-            var volume = Read<WorkVolume>(VolumePath(id, number)) ?? throw new InputError("分卷记录缺失。");
-            if (volume.First < 0 || volume.Last < volume.First || volume.Last >= view.Completed || volume.Last - volume.First >= 16 ||
-                volume.Bytes is <= 44 or > Wave.MaxBytes)
-                throw new InputError("分卷记录无效。");
             var files = new List<(FileStream File, long Bytes)>();
             try
             {
+                var volume = Read<WorkVolume>(VolumePath(id, number)) ?? throw new InputError("分卷记录缺失。");
+                if (volume.Number != number || volume.First < 0 || volume.Last < volume.First || volume.Last >= view.Completed ||
+                    volume.Last - volume.First >= 16 || volume.Bytes is <= 44 or > Wave.MaxBytes)
+                    throw new InputError("分卷记录无效。");
                 long length = 44;
                 for (long n = volume.First; n <= volume.Last; n++)
                 {
@@ -148,10 +152,11 @@ public sealed partial class Works
                 if (length != volume.Bytes) throw new InputError("分卷长度不匹配。");
                 return (new VolumeStream(files, volume), volume.Bytes);
             }
-            catch
+            catch (Exception e) when (e is InputError or IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
             {
                 foreach (var (file, _) in files) file.Dispose();
-                throw;
+                MarkHistoricalDamage(state);
+                throw new InputError("已保存的分卷或音频校验失败。");
             }
         }
     }
@@ -160,11 +165,26 @@ public sealed partial class Works
     {
         lock (gate)
         {
-            var view = Owned(id, owner).View;
-            if (number < 0 || number >= view.Completed) throw new InputError("分段音频尚未完成。");
-            var receipt = Receipt(id, number) ?? throw new InputError("分段音频记录缺失。");
-            if (!Verified(AudioPath(id, number), receipt)) throw new InputError("分段音频损坏。");
-            return File.OpenRead(AudioPath(id, number));
+            var state = Owned(id, owner);
+            if (state.View.State == "damaged" || number < 0 || number >= state.View.Completed)
+                throw new InputError("分段音频尚未完成或已损坏。");
+            try
+            {
+                var receipt = Receipt(id, number) ?? throw new InputError("分段音频记录缺失。");
+                var file = File.OpenRead(AudioPath(id, number));
+                try
+                {
+                    if (!Verified(file, receipt)) throw new InputError("分段音频损坏。");
+                    file.Position = 0;
+                    return file;
+                }
+                catch { file.Dispose(); throw; }
+            }
+            catch (Exception e) when (e is InputError or IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            {
+                MarkHistoricalDamage(state);
+                throw new InputError("已保存的分段音频校验失败。");
+            }
         }
     }
 

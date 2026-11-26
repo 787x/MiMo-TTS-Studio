@@ -20,29 +20,45 @@ internal static class WorkUpload
         long uploaded = status.Data.GetProperty("bytes").GetInt64();
         string id = args.GetProperty("id").GetString()!;
         using var file = LinuxIdentity.OpenPrivate(path, long.MaxValue);
-        long length = file.Length;
+        var revision = LinuxIdentity.FileRevision(file);
+        long length = revision.Length;
         if (uploaded > length) throw new ArgumentException();
         using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[64 * 1024];
-        long offset = 0;
+        string Hex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
+        async Task ReadThrough(long end)
+        {
+            while (file.Position < end)
+            {
+                int count = (int)Math.Min(buffer.Length, end - file.Position);
+                await file.ReadExactlyAsync(buffer.AsMemory(0, count), ct);
+                digest.AppendData(buffer.AsSpan(0, count));
+            }
+        }
+        await ReadThrough(uploaded);
+        string prefixSha256 = Hex(digest.GetCurrentHash());
+        await ReadThrough(length);
+        string sha256 = Hex(digest.GetHashAndReset());
+        if (LinuxIdentity.FileRevision(file) != revision) throw new ArgumentException();
+        var bound = await Call("bind_work_upload", Wire.Element(new { id, bytes = length, sha256, offset = uploaded, prefixSha256 }));
+        if (!bound.Success) return bound;
+        file.Position = uploaded;
+        long offset = uploaded;
         while (offset < length)
         {
-            int limit = (int)Math.Min(buffer.Length, length - offset);
-            // Align to the server cursor even if another client used different
-            // chunk sizes. Verify the retained prefix by replaying it.
-            if (offset < uploaded) limit = (int)Math.Min(limit, uploaded - offset);
-            await file.ReadExactlyAsync(buffer.AsMemory(0, limit), ct);
-            var bytes = buffer.AsSpan(0, limit);
-            digest.AppendData(bytes);
+            int count = (int)Math.Min(buffer.Length, length - offset);
+            await file.ReadExactlyAsync(buffer.AsMemory(0, count), ct);
+            var bytes = buffer.AsSpan(0, count);
             var reply = await Call("upload_work_chunk", Wire.Element(new
             {
                 id, offset, data = Convert.ToBase64String(bytes),
-                sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()
+                sha256 = Hex(SHA256.HashData(bytes))
             }));
             if (!reply.Success) return reply;
-            offset += limit;
+            offset += count;
+            if (reply.Data.GetProperty("bytes").GetInt64() != offset) throw new ArgumentException();
         }
-        if (file.Length != length) throw new ArgumentException();
-        return AgentReply.Ok(new { id, bytes = offset, sha256 = Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant() });
+        if (LinuxIdentity.FileRevision(file) != revision) throw new ArgumentException();
+        return AgentReply.Ok(new { id, bytes = length, sha256 });
     }
 }

@@ -9,6 +9,7 @@ with tempfile.TemporaryDirectory(prefix='mimotts-hooks-') as temporary:
         return subprocess.run(['bash',str(repo/'packaging/cmd'/name)],env={**env,**overrides},capture_output=True)
     assert hook('install_callback').returncode==0
     key=root/'etc/mimo-key';key.write_text('test-only-key');key.chmod(0o600)
+    export=root/'etc/export-key';export.write_bytes(bytes(range(32)));export.chmod(0o600)
     llm=root/'etc/llm-private';llm.write_text('private-test-llm-config');llm.chmod(0o600)
     audio=root/'var/audio';audio.mkdir();(audio/'test.wav').write_bytes(b'fixture')
     samples=root/'var/samples';samples.mkdir();(samples/'test.mp3').write_bytes(b'private-sample')
@@ -18,10 +19,11 @@ with tempfile.TemporaryDirectory(prefix='mimotts-hooks-') as temporary:
     print('PASS upgrade retains configuration and assets')
     assert hook('uninstall_init').returncode==0
     assert hook('uninstall_callback').returncode==0 and audio.exists() and samples.exists() and (works/'work.json').read_text()=='test-private-work' and (agent/'grants.json').read_text()=='test-private-agent-config'
-    key.unlink();llm.unlink() # Simulate fnOS removing etc on uninstall.
+    key.unlink();llm.unlink();export.unlink() # Simulate fnOS removing etc on uninstall.
     assert hook('install_callback').returncode==0 and key.read_text()=='test-only-key'
     assert llm.read_text()=='private-test-llm-config' and llm.stat().st_mode & 0o777==0o600
     assert key.stat().st_mode & 0o777==0o600
+    assert export.read_bytes()==bytes(range(32)) and export.stat().st_mode & 0o777==0o600
     print('PASS keep uninstall/reinstall retains Key and audio with private permissions')
     outside=root/'unrelated';outside.mkdir();(outside/'keep.txt').write_text('user-data')
     assert hook('uninstall_init').returncode==0

@@ -56,7 +56,7 @@ agent cancel_job --id JOB_ID
 {"success":true,"code":"ok","data":{"job":"服务端JobID","replayed":false}}
 ```
 
-默认提交后立即退出；`--wait` 轮询同一个 Job，终态为 succeeded 才退出 0。Job 状态包括 running/canceling/succeeded/canceled/failed。等待超时、Ctrl+C、CLI 退出、MCP 断开均不隐式取消成功提交的 TTS；使用 `cancel_job` 明确取消并查询至终态。短文本接口与长篇作品共用一个 TTS 槽。短文本接口返回单个 WAV，最多 64 MiB。取消旧 ID 不影响新 Job，其他用户的 Job 不可见。
+默认提交后立即退出；`--wait` 轮询同一个 Job，终态为 succeeded 才退出 0。Job 状态包括 running/canceling/succeeded/canceled/failed。等待超时、Ctrl+C、CLI 退出、MCP 断开均不隐式取消成功提交的 TTS；使用 `cancel_job` 明确取消并查询至终态。短文本接口与长篇作品共用一个 TTS 槽。短文本接口返回单个 WAV，最多 64 MiB。超过单 WAV 估算预算会在调用 MiMo 前返回 long_work_required，可改用长篇工具。取消旧 ID 不影响新 Job，其他用户的 Job 不可见。
 
 | 退出码 | code / 意义 |
 | --- | --- |
@@ -220,7 +220,7 @@ Agent 私有持久状态位于 TRIM_PKGVAR/agent，升级保留；保留数据�
 长篇工具沿用现有授权和账号归属。创建、上传、准备与运行操作需要 `generate`。查询和下载需要 `read`，导出需要 `export`，删除需要 `delete`。
 
 1. `create_work --title TITLE` 返回作品 ID。可传入 32 位 UUID 作为 `--id`，用于重试同一次创建。
-2. `upload_work_file --id ID --input FILE` 以 64 KiB 分块读取显式选择的私有 TXT，返回 `bytes` 和 `sha256`。中断后重复执行同一命令。MCP 使用 `upload_work_chunk`，逐块传入 `id`、十进制整数 `offset`、Base64 `data` 和分块 `sha256`，按返回的已确认字节数继续。
+2. `upload_work_file --id ID --input FILE` 以 64 KiB 分块读取显式选择的私有 TXT，返回 `bytes` 和 `sha256`。中断后用同一文件重复执行，CLI 在本地计算哈希并从服务端确认的位置继续。MCP 可先用 `bind_work_upload` 绑定总长度、完整 SHA-256、已确认的 offset 和对应 prefixSha256，再使用 `upload_work_chunk`，逐块传入 `id`、十进制整数 `offset`、Base64 `data` 和分块 `sha256`，按返回的已确认字节数继续。
 3. `prepare_work --id ID --bytes N --sha256 HASH` 封存正文并在后台建立索引。可传入既有 `--preset` 或 TTS 参数。用 `get_work` 查询 `ready`，用 `preview_work` 和 `list_work_chapters` 分页核对正文、章节和前缀。
 4. `control_work --id ID --action start` 启动生成。`pause` 在当前段结束后暂停，`resume` 继续，`cancel` 取消。只有明确接受可能的重复计费时，才对 `uncertain` 状态使用 `--action resume --confirm true`。
 5. `list_work_volumes --id ID` 列出分卷；可用 `--chapter N` 过滤，按 `nextOffset` 翻页。编号和章节从 0 开始。使用 `download_work_volume --id ID --number N --output NEW_FILE` 下载 WAV，或用 `export_work_volume --id ID --number N --directory-id DIRECTORY --file-name NAME` 导出。

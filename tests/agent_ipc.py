@@ -65,6 +65,49 @@ with tempfile.TemporaryDirectory(prefix='mimo-agent-ipc-') as tmp:
   page=run('preview_work','--id',work)['data']
   check(len(page['items'])==12 and page['nextOffset']==12,'real CLI IPC preview page is bounded')
   run('delete_work','--id',work)
+  # Observe the actual CLI wire traffic. Return a non-block-aligned
+  # acknowledged cursor and accept exactly one suffix upload.
+  stub=root/'target/upload-observer.sock'
+  original=source.read_bytes()
+  cursor=65101
+  pid=os.fork()
+  if pid==0:
+   try:
+    drop()
+    with socket.socket(socket.AF_UNIX) as listener:
+     listener.bind(str(stub));listener.listen(1);listener.settimeout(15)
+     for tool in ('upload_work_file','bind_work_upload','upload_work_chunk'):
+      connection,_=listener.accept()
+      with connection,connection.makefile('rb') as reader:
+       connection.settimeout(5)
+       size=struct.unpack('>i',reader.read(4))[0]
+       request=json.loads(reader.read(size));assert request['tool']==tool
+       arguments=request['arguments'];assert arguments['id']==work
+       data={'state':'uploading','bytes':cursor}
+       if tool=='bind_work_upload':
+        assert arguments['offset']==cursor and arguments['bytes']==len(original)
+        assert arguments['sha256']==hashlib.sha256(original).hexdigest()
+        assert arguments['prefixSha256']==hashlib.sha256(original[:cursor]).hexdigest()
+       if tool=='upload_work_chunk':
+        assert arguments['offset']==cursor and base64.b64decode(arguments['data'])==original[cursor:]
+        data={'bytes':len(original)}
+       encoded=json.dumps({'success':True,'code':'ok','data':data}).encode()
+       connection.sendall(struct.pack('>i',len(encoded))+encoded)
+    os._exit(0)
+   except Exception:
+    os._exit(1)
+  try:
+   for _ in range(100):
+    if stub.exists():break
+    time.sleep(.02)
+   observed=subprocess.run(cli+['upload_work_file','--socket',str(stub),'--credential-file',str(credential),
+       '--id',work,'--input',str(source)],capture_output=True,preexec_fn=drop,timeout=15)
+   _,status=os.waitpid(pid,0);pid=None
+   check(observed.returncode==0 and status==0,'CLI wire resume transmits only the suffix at the exact acknowledged byte')
+  finally:
+   if pid is not None:
+    os.kill(pid,signal.SIGTERM);os.waitpid(pid,0)
+   stub.unlink(missing_ok=True)
   audio=io.BytesIO()
   with wave.open(audio,'wb') as f:f.setnchannels(1);f.setsampwidth(2);f.setframerate(24000);f.writeframes(b'\0'*24000)
   file=root/'files/sample.wav';file.write_bytes(audio.getvalue());os.chown(file,account.pw_uid,account.pw_gid);file.chmod(0o600)

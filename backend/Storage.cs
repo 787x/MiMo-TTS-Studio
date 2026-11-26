@@ -61,6 +61,21 @@ public sealed partial class Storage
             ttsRevision=Guid.NewGuid().ToString("N");
         }
     }
+    internal byte[] ExportKey()
+    {
+        lock (gate)
+        {
+            string path = Path.Combine(Config, "export-key");
+            if (!File.Exists(path))
+            {
+                AtomicWrite(path, System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+                if (OperatingSystem.IsLinux()) ExportDirectory.SyncPrivate(Config);
+            }
+            if (OperatingSystem.IsLinux()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            var key = File.ReadAllBytes(path);
+            return key.Length == 32 ? key : throw new InputError("无法读取 NAS 导出回执密钥。");
+        }
+    }
     public bool HasSpace(long reservation = Wave.MaxBytes)
     {
         lock (gate)

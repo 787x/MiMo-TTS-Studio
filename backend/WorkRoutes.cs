@@ -10,6 +10,8 @@ public static class WorkRoutes
         routes.MapPost("/", (HttpContext c, Works works, WorkCreate input) => works.Create(Owner(c), input));
         routes.MapGet("/{id}", (HttpContext c, Works works, string id) => works.Get(id, Owner(c)));
         routes.MapDelete("/{id}", (HttpContext c, Works works, string id) => { works.Delete(id, Owner(c)); return Results.NoContent(); });
+        routes.MapPost("/{id}/text/bind", (HttpContext c, Works works, string id, WorkUploadPlan input) =>
+            works.BindUpload(id, Owner(c), input, c.RequestAborted));
         routes.MapPut("/{id}/text", async (HttpContext c, Works works, string id, long offset) =>
         {
             var body = new byte[Works.ChunkBytes + 1];
@@ -31,6 +33,6 @@ public static class WorkRoutes
             Results.Stream(works.OpenVolume(id, Owner(c), number).File, "audio/wav",
                 c.Request.Query.ContainsKey("download") ? $"mimo-{id}-{number + 1}.wav" : null, enableRangeProcessing: true));
         routes.MapPost("/{id}/volumes/{number:long}/export", (HttpContext c, Works works, NasExport exports, string id, long number, ExportInput input) =>
-            exports.Copy(Owner(c), input, () => works.OpenVolume(id, Owner(c), number), c.RequestAborted));
+            exports.Copy(Owner(c), input, () => works.OpenVolume(id, Owner(c), number), c.RequestAborted, FormattableString.Invariant($"{id}/{number}")));
     }
 }

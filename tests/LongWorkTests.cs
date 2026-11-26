@@ -25,6 +25,84 @@ internal static class LongWorkTests
             bool enough = true;
             var works = new Works(storage, mimo, jobs, lifetime) { SpaceAvailable = _ => enough };
             var options = new ScriptRequest("", Voice: "冰糖", Tags: "温柔", Singing: true, SegmentCharacters: 50);
+            int beforeShort = cloud.Calls;
+            reject(() => jobs.Start(Owner, options with { Text = new string('x', 60_000) }),
+                "single-WAV path rejects a large paid workload before any dispatch");
+            check(cloud.Calls == beforeShort, "short admission spends no MiMo calls for a 60,000-byte, 1,200-segment plan");
+
+            var listing = new List<WorkView>();
+            for (int n = 0; n < 29; n++) listing.Add(works.Create(Owner, new("List " + n)));
+            var other = works.Create("1001", new("Owner 1001"));
+            var page1 = JsonSerializer.SerializeToElement(works.List(Owner, 0), Json);
+            var page2 = JsonSerializer.SerializeToElement(works.List(Owner, page1.GetProperty("nextOffset").GetInt32()), Json);
+            var ids = page1.GetProperty("items").EnumerateArray().Concat(page2.GetProperty("items").EnumerateArray())
+                .Select(item => item.GetProperty("id").GetString()!).ToArray();
+            check(ids.SequenceEqual(listing.OrderByDescending(work => work.Created).ThenBy(work => work.Id, StringComparer.Ordinal).Select(work => work.Id)) &&
+                JsonElement.DeepEquals(JsonSerializer.SerializeToElement(works.List(Owner, 0), Json), page1) &&
+                page2.GetProperty("nextOffset").ValueKind == JsonValueKind.Null,
+                "work pages are newest-first, stable, complete and owner-scoped");
+            var replay = works.Create(Owner, new("List 28", listing[^1].Id));
+            check(replay.Id == listing[^1].Id &&
+                JsonElement.DeepEquals(JsonSerializer.SerializeToElement(works.List(Owner, 0), Json), page1),
+                "same creation UUID after a lost response returns the original work");
+            reject(() => works.Create("1001", new("List 28", replay.Id)), "creation replay cannot cross ownership");
+            works.Delete(other.Id, "1001");
+            foreach (var work in listing) works.Delete(work.Id, Owner);
+
+            byte[] full = Encoding.UTF8.GetBytes(new string('字', 60_000) + "结尾");
+            const int retainedBytes = 140001;
+            byte[] prefix = full[..retainedBytes];
+            byte[] changed = (byte[])full.Clone();
+            changed[^1] ^= 1;
+            var interruptedUpload = works.Create(Owner, new("Bound upload"));
+            string uploadId = interruptedUpload.Id;
+            await works.BindUpload(uploadId, Owner, new(full.Length, Digest(full), 0, Digest([])), default);
+            for (int offset = 0; offset < retainedBytes; offset += Works.ChunkBytes)
+            {
+                byte[] chunk = prefix[offset..Math.Min(retainedBytes, offset + Works.ChunkBytes)];
+                works.Upload(uploadId, Owner, offset, chunk, Digest(chunk));
+            }
+            var reopenedUpload = new Works(storage, mimo, jobs, lifetime);
+            try
+            {
+                await reopenedUpload.BindUpload(uploadId, Owner, new(changed.Length, Digest(changed), retainedBytes, Digest(prefix)), default);
+                throw new Exception("changed suffix accepted");
+            }
+            catch (InputError) { check(reopenedUpload.Get(uploadId, Owner).Bytes == retainedBytes, "bound identity rejects a changed suffix before append"); }
+            try
+            {
+                await reopenedUpload.BindUpload(uploadId, Owner, new(full.Length, Digest(full), retainedBytes, Digest([])), default);
+                throw new Exception("changed prefix accepted");
+            }
+            catch (InputError) { check(true, "existing prefix must match without retransmitting it"); }
+            await reopenedUpload.BindUpload(uploadId, Owner, new(full.Length, Digest(full), retainedBytes, Digest(prefix)), default);
+            byte[] tail = full[retainedBytes..];
+            check(reopenedUpload.Upload(uploadId, Owner, retainedBytes, tail, Digest(tail)).Bytes == full.Length,
+                "restored cursor accepts only the remaining suffix");
+            reopenedUpload.Prepare(uploadId, Owner, new(options, full.Length));
+            check((await State(reopenedUpload, uploadId, "ready")).Sha256 == Digest(full),
+                "bound full digest is verified even when legacy prepare omits its hash");
+            reopenedUpload.Delete(uploadId, Owner);
+
+            var mixed = works.Create(Owner, new("Mixed upload"));
+            await works.BindUpload(mixed.Id, Owner, new(3, Digest([1, 2, 3]), 0, Digest([])), default);
+            works.Upload(mixed.Id, Owner, 0, [1, 2, 4], Digest([1, 2, 4]));
+            works.Prepare(mixed.Id, Owner, new(options, 3));
+            check((await State(works, mixed.Id, "invalid")).Error!.Contains("SHA-256"),
+                "per-chunk checksums cannot make a mixed upload valid");
+            works.Delete(mixed.Id, Owner);
+
+            var bigCloud = new WorkCloud { ResponseBytes = 14 * 1024 * 1024 };
+            var shortJobs = new Jobs(storage, new Mimo(new HttpClient(bigCloud)), lifetime);
+            var oversizedJob = shortJobs.Start(Owner, new(new string('x', 300), SegmentCharacters: 50));
+            JobView shortStatus;
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            {
+                while ((shortStatus = shortJobs.Get(oversizedJob.Id, Owner)!).State == "running")
+                    await Task.Delay(10, timeout.Token);
+            }
+            check(shortStatus.State == "failed" && shortStatus.AssetId == null && bigCloud.Calls == 1 &&
+                shortStatus.Error!.Contains("单个 WAV"), "oversized projected single WAV stops after the first response without replay");
             foreach (int size in new[] { 100_000, 1_000_000 })
             {
                 var work = works.Create(Owner, new("测试 " + size));
@@ -149,14 +227,16 @@ internal static class LongWorkTests
                     if (entry.Name.EndsWith(".wav") && entry.Length > 44) count++;
                 check(count >= 2, "chapter TAR contains its ordered standalone WAV files");
             }
-            string first = Directory.EnumerateFiles(Path.Combine(storage.WorksRoot, transcript.Id, "audio"), "audio.wav", SearchOption.AllDirectories).First();
+            string first = Directory.EnumerateFiles(Path.Combine(storage.WorksRoot, transcript.Id, "audio"), "audio.wav", SearchOption.AllDirectories).Order(StringComparer.Ordinal).First();
             using (var file = new FileStream(first, FileMode.Open, FileAccess.Write)) { file.Position = 44; file.WriteByte(255); }
             var corrupt = new Works(storage, mimo, jobs, lifetime);
             await corrupt.StartAsync(default);
             await corrupt.Recovery;
+            check(corrupt.Get(transcript.Id, Owner).State == "succeeded" && cloud.Calls == done.Total + 1,
+                "startup does not scrub finished historical audio");
+            reject(() => corrupt.OpenVolume(transcript.Id, Owner, 0), "historical volume integrity is checked before serving");
             check(corrupt.Get(transcript.Id, Owner).State == "damaged" && cloud.Calls == done.Total + 1,
-                "same-length PCM corruption is detected on restart with no cloud replay");
-            corrupt.Delete(transcript.Id, Owner);
+                "same-length PCM corruption is isolated on demand without cloud replay");
 
             var shutdown = new WorkLifetime();
             var disconnect = new WorkCloud { Block = true };
@@ -195,13 +275,40 @@ internal static class LongWorkTests
             interruptedCommit["inFlight"] = true;
             interruptedCommit["attempt"] = 1;
             File.WriteAllText(workRecord, interruptedCommit.ToJsonString());
+            var historical = new List<string>();
+            for (int n = 0; n < 3; n++)
+            {
+                var old = works.Create(Owner, new("Historical fixture"));
+                string manifest = Path.Combine(storage.WorksRoot, old.Id, "work.json");
+                var previous = JsonNode.Parse(File.ReadAllText(manifest))!;
+                previous["view"]!["state"] = "succeeded";
+                previous["view"]!["total"] = 1;
+                previous["view"]!["completed"] = 1;
+                previous["view"]!["volumes"] = 1;
+                File.WriteAllText(manifest, previous.ToJsonString());
+                historical.Add(old.Id);
+            }
             var afterCommit = new Works(storage, mimo, jobs, lifetime);
             await afterCommit.StartAsync(default);
             await afterCommit.Recovery;
             var reconciled = await State(afterCommit, staged.Id, "succeeded");
             check(reconciled.Completed == 1 && reconciled.Volumes == 1 && Directory.Exists(committed) && cloud.Calls == callsBeforeRestart,
                 "restart promotes fully flushed staged WAV before advancing, with zero cloud replay");
-            afterCommit.Delete(staged.Id, Owner);
+            check(afterCommit.Get(transcript.Id, Owner).State == "damaged" &&
+                historical.All(id => afterCommit.Get(id, Owner).State == "succeeded"),
+                "active recovery does not open audio from historical works");
+            foreach (var historicalId in historical) afterCommit.Delete(historicalId, Owner);
+            File.Delete(Path.Combine(committed, "audio.json"));
+            File.WriteAllText(workRecord, interruptedCommit.ToJsonString());
+            var damagedPending = new Works(storage, mimo, jobs, lifetime);
+            await damagedPending.StartAsync(default);
+            await damagedPending.Recovery;
+            check(damagedPending.Get(staged.Id, Owner).State == "damaged" && cloud.Calls == callsBeforeRestart,
+                "missing receipt for a committed file isolates only that job and never resends");
+            File.Delete(workRecord);
+            reject(() => damagedPending.Create(Owner, new("Crash during local commit", staged.Id)),
+                "an unreadable work directory cannot be recreated under a used ID");
+            damagedPending.Delete(transcript.Id, Owner);
 
             var sample = storage.CreateSample(Owner, "参考样本", "wav", Wave.Merge([new(24000, new byte[24000])]));
             var clone = works.Create(Owner, new("Clone snapshot"));
@@ -270,15 +377,16 @@ internal static class LongWorkTests
     private sealed class WorkCloud : HttpMessageHandler
     {
         public int Calls, CloneRequests;
+        public int? ResponseBytes;
         public string? FirstClone;
         public Func<int, string>? Before;
         public bool Block;
         public TaskCompletionSource Sent = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private static string Response(int rate, string reason) => JsonSerializer.Serialize(new
+        private static string Response(int rate, string reason, int bytes = 800_000) => JsonSerializer.Serialize(new
         {
             choices = new[] { new { finish_reason = reason, message = new { audio = new
             {
-                data = Convert.ToBase64String(Wave.Merge([new(rate, new byte[800_000])]))
+                data = Convert.ToBase64String(Wave.Merge([new(rate, new byte[bytes])]))
             } } } }
         });
         private readonly string ok = Response(24000, "stop");
@@ -301,7 +409,7 @@ internal static class LongWorkTests
             }
             Sent.TrySetResult();
             if (Block) await Task.Delay(Timeout.Infinite, ct);
-            return new(HttpStatusCode.OK) { Content = new StringContent(Before?.Invoke(call) == "length" ? limited : call == 33 ? otherRate : ok) };
+            return new(HttpStatusCode.OK) { Content = new StringContent(Before?.Invoke(call) == "length" ? limited : call == 33 ? otherRate : ResponseBytes is { } size ? Response(24000, "stop", size) : ok) };
         }
     }
 

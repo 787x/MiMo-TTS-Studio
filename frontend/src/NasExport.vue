@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import {computed,onMounted,onUnmounted,ref} from 'vue'
+import {sha256} from '@noble/hashes/sha2.js'
+import {bytesToHex} from '@noble/hashes/utils.js'
 import {TrimApp} from '@trimjs/web-app'
 const props=defineProps<{assetId:string;exportPath?:string;chapter?:{path:string;chapter:number};api:(path:string,method?:string,data?:unknown,signal?:AbortSignal)=>Promise<any>}>()
 const emit=defineEmits<{close:[]}>()
@@ -8,16 +10,30 @@ const targets=ref<Target[]>([]),directoryId=ref(''),fileName=ref(defaultName()),
 const chosen=computed(()=>targets.value.find(t=>t.id===directoryId.value))
 const finalName=computed(()=>fileName.value.toLowerCase().endsWith('.wav')?fileName.value.slice(0,-4)+'.wav':fileName.value+'.wav')
 const lifetime=new AbortController();let disposed=false,revision=0
-let batchOffset=0,batchCount=0
+let batchOffset=0,batchCount=0,batchKey='',operationId=''
+function batchOperation(chapter:{path:string;chapter:number},directory:string,stem:string){
+ const key='mimo-export-'+bytesToHex(sha256(new TextEncoder().encode(JSON.stringify([chapter.path,chapter.chapter,directory,stem]))))
+ if(key!==batchKey){
+  batchKey=key;batchOffset=0;batchCount=0
+  operationId=bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  try{
+   const previous=sessionStorage.getItem(key)
+   if(previous&&/^[a-f0-9]{32}$/.test(previous))operationId=previous
+   else sessionStorage.setItem(key,operationId)
+  }catch{/* Keep the operation ID in this dialog when storage is unavailable. */}
+ }
+ return operationId
+}
 async function exportChapter(input:{directoryId:string;fileName:string}){
  const chapter=props.chapter!
  const stem=input.fileName.replace(/\.wav$/i,'')
+ const operationId=batchOperation(chapter,input.directoryId,stem)
  let next:number|null=batchOffset
  while(next!==null){
   const page:{items:{number:number}[];nextOffset:number|null}=await props.api(chapter.path+'/volumes?chapter='+chapter.chapter+'&offset='+next,'GET',undefined,lifetime.signal)
   for(const volume of page.items){
    await props.api(chapter.path+'/volumes/'+volume.number+'/export','POST',
-    {...input,fileName:stem+'-'+(volume.number+1)+'.wav'},lifetime.signal)
+    {...input,fileName:stem+'-'+(volume.number+1)+'.wav',operationId},lifetime.signal)
    batchOffset=volume.number+1
    batchCount++
    receipt.value='已导出 '+batchCount+' 卷。'
@@ -27,7 +43,9 @@ async function exportChapter(input:{directoryId:string;fileName:string}){
  receipt.value='本章已导出 '+batchCount+' 卷。'
 }
 let host:TrimApp|undefined
-function defaultName(){return 'mimo-'+new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'-'+crypto.getRandomValues(new Uint32Array(1))[0]!.toString(16).padStart(8,'0')+'.wav'}
+function defaultName(){
+ if(props.chapter)return 'mimo-'+props.chapter.path.split('/').at(-1)+'-chapter-'+(props.chapter.chapter+1)+'.wav'
+ return 'mimo-'+new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'-'+crypto.getRandomValues(new Uint32Array(1))[0]!.toString(16).padStart(8,'0')+'.wav'}
 async function refresh(){
  const request=++revision;loading.value=true;error.value=''
  try{const list:Target[]=await props.api('/export/targets','GET',undefined,lifetime.signal);if(disposed||request!==revision)return;targets.value=list;if(!list.some(t=>t.id===directoryId.value&&t.writable))directoryId.value=list.find(t=>t.writable)?.id||''}
@@ -79,7 +97,7 @@ onUnmounted(()=>{disposed=true;revision++;lifetime.abort()})
     <p v-if="!loading&&!targets.length" class="hint">尚无可用授权目录。请先通过 fnOS 授权，不能手动输入宿主机路径。</p>
     <label>{{chapter?'WAV 文件名前缀':'WAV 文件名'}}<input v-model="fileName" :disabled="busy" maxlength="180" required autocomplete="off"></label>
     <p class="nas-destination">目标：{{chosen?.path||'（尚未选择）'}} / {{chapter ? fileName.replace(/\.wav$/i,'')+'-卷号.wav' : finalName}}</p>
-    <p class="hint">同名文件不会覆盖；再次导出会使用新的默认名称。请勿在文件名中填写敏感正文。</p>
+    <p class="hint">{{chapter?'网络中断后，使用原目录和文件名前缀继续。只有属于同一次导出的已校验文件才会被跳过。':'同名文件不会覆盖；再次导出会使用新的默认名称。'}}请勿在文件名中填写敏感正文。</p>
     <button :disabled="busy||loading||!chosen?.writable||!fileName.trim()">{{busy?'正在复制，请等待…':chapter?'导出本章分卷':'确认导出 WAV 到 NAS'}}</button>
    </form>
   </section>

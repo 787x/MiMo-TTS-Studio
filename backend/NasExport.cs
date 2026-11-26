@@ -8,7 +8,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Studio;
 
-public sealed record ExportInput(string DirectoryId, string FileName);
+public sealed record ExportInput(string DirectoryId, string FileName, string? OperationId = null);
 public sealed record ExportTarget(string Id, string Path, bool Writable, string? Reason);
 public sealed record ExportReceipt(string FileName, string Directory, long Bytes);
 
@@ -65,8 +65,8 @@ public sealed class FnOsDirectories(HttpClient client, Func<string?> token)
 public sealed class NasExport(Storage storage, FnOsDirectories platform)
 {
     private readonly SemaphoreSlim slot = new(1, 1);
-    private readonly byte[] idKey = RandomNumberGenerator.GetBytes(32);
-    private string Id(string path) => Convert.ToHexString(HMACSHA256.HashData(idKey, Encoding.UTF8.GetBytes(path))).ToLowerInvariant();
+    private readonly Lazy<byte[]> idKey = new(storage.ExportKey);
+    private string Id(string path) => Convert.ToHexString(HMACSHA256.HashData(idKey.Value, Encoding.UTF8.GetBytes(path))).ToLowerInvariant();
     private bool Allowed(string path)
     {
         // Only exact roots returned by fnOS are selectable. No subdirectory or
@@ -119,9 +119,11 @@ public sealed class NasExport(Storage storage, FnOsDirectories platform)
             return (audio, asset.Bytes);
         }, ct);
 
-    public async Task<ExportReceipt> Copy(string owner, ExportInput input, Func<(Stream File, long Bytes)> open, CancellationToken ct)
+    public async Task<ExportReceipt> Copy(string owner, ExportInput input, Func<(Stream File, long Bytes)> open, CancellationToken ct, string? sourceId = null)
     {
         string name = FileName(input.FileName);
+        if (input.OperationId != null && (!Storage.ValidId(input.OperationId) || sourceId == null))
+            throw new InputError("导出操作 ID 无效。");
         if (!await slot.WaitAsync(0, ct)) throw new InputError("已有 NAS 导出正在进行，请稍后重试。");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(2)); ct = timeout.Token;
@@ -134,6 +136,30 @@ public sealed class NasExport(Storage storage, FnOsDirectories platform)
             var (file, bytes) = open();
             using var source = file;
             if (bytes < 44 || bytes > Wave.MaxBytes || source.Length != bytes) throw new InputError("源音频不完整，无法导出。");
+            byte[]? sourceHash = null;
+            byte[] Stamp(FileStream file) => HMACSHA256.HashData(idKey.Value, JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                purpose = "mimotts-export-v1", owner, sourceId, path, name, input.OperationId, bytes,
+                digest = Convert.ToHexString(sourceHash!), directory = dir.Identity, file = ExportDirectory.IdentityOf(file.SafeFileHandle)
+            }));
+            if (input.OperationId != null)
+            {
+                sourceHash = await SHA256.HashDataAsync(source, ct);
+                source.Position = 0;
+                using var existing = dir.Existing(name);
+                if (existing != null)
+                {
+                    if (existing.Length != bytes || !dir.HasStamp(existing, Stamp(existing)) ||
+                        !CryptographicOperations.FixedTimeEquals(await SHA256.HashDataAsync(existing, ct), sourceHash))
+                        throw new InputError("目标已有同名文件，无法核实属于此操作。已有文件未覆盖。");
+                    await RequireCurrent(owner, path, ct);
+                    dir.RequireSame(path);
+                    dir.RequireEntry(name, existing);
+                    ct.ThrowIfCancellationRequested();
+                    dir.Flush();
+                    return new(name, path, bytes);
+                }
+            }
             using var target = dir.Temporary();
             var buffer = new byte[64 * 1024]; long total = 0; int n;
             while ((n = await source.ReadAsync(buffer, ct)) != 0)
@@ -143,6 +169,7 @@ public sealed class NasExport(Storage storage, FnOsDirectories platform)
                 await target.WriteAsync(buffer.AsMemory(0, n), ct);
             }
             if (total != bytes || target.Length != total) throw new InputError("音频未完整复制，导出已取消。");
+            if (sourceHash != null) dir.SetStamp(target, Stamp(target));
             target.Flush(true);
             await RequireCurrent(owner, path, ct);
             dir.RequireSame(path);
@@ -169,7 +196,17 @@ internal sealed class ExportDirectory(SafeFileHandle handle) : IDisposable
     private const int DirectoryFlag = 0x10000, NoFollow = 0x20000, CloseExec = 0x80000;
     private const int TmpFile = 0x410000, ReadWrite = 2;
     [StructLayout(LayoutKind.Explicit, Size = 144)]
-    private struct Stat { [FieldOffset(0)] public ulong Dev; [FieldOffset(8)] public ulong Inode; }
+    private struct Stat
+    {
+        [FieldOffset(0)] public ulong Dev;
+        [FieldOffset(8)] public ulong Inode;
+        [FieldOffset(24)] public uint Mode;
+    }
+    private const string StampName = "user.mimotts.export";
+    [DllImport("libc", SetLastError = true)]
+    private static extern int fsetxattr(SafeFileHandle fd, string name, byte[] value, nuint size, int flags);
+    [DllImport("libc", SetLastError = true)]
+    private static extern nint fgetxattr(SafeFileHandle fd, string name, byte[] value, nuint size);
     [DllImport("libc", SetLastError = true)] private static extern int open(string path, int flags);
     [DllImport("libc", SetLastError = true)] private static extern int openat(SafeFileHandle dir, string name, int flags, uint mode = 0);
     [DllImport("libc", SetLastError = true)] private static extern int fstat(SafeFileHandle fd, out Stat stat);
@@ -220,11 +257,47 @@ internal sealed class ExportDirectory(SafeFileHandle handle) : IDisposable
         catch { current.Dispose(); throw; }
     }
     public FileStream Temporary() => new(Checked(openat(handle, ".", TmpFile | ReadWrite | CloseExec, 0x1A4)), FileAccess.ReadWrite);
-    private static bool Same(SafeFileHandle a, SafeFileHandle b)
+    private static Stat GetStat(SafeFileHandle fd)
     {
-        if (fstat(a, out var first) != 0) Fail();
-        if (fstat(b, out var second) != 0) Fail();
-        return first.Dev == second.Dev && first.Inode == second.Inode;
+        if (fstat(fd, out var stat) != 0) Fail();
+        return stat;
+    }
+    internal static string IdentityOf(SafeFileHandle file)
+    {
+        var stat = GetStat(file);
+        return FormattableString.Invariant($"{stat.Dev}:{stat.Inode}");
+    }
+    internal string Identity => IdentityOf(handle);
+    private static bool Same(SafeFileHandle a, SafeFileHandle b) => IdentityOf(a) == IdentityOf(b);
+
+    internal FileStream? Existing(string name)
+    {
+        const int NonBlock = 0x800;
+        // Inspect the inode before opening it for reads, including device nodes.
+        const int PathOnly = 0x200000;
+        int fd = openat(handle, name, PathOnly | NoFollow | CloseExec);
+        if (fd < 0 && Marshal.GetLastPInvokeError() == 2) return null;
+        using var entry = Checked(fd);
+        if ((GetStat(entry).Mode & 0xf000) != 0x8000)
+            throw new InputError("目标已有同名条目，已有文件未覆盖。");
+        return new(Checked(open("/proc/self/fd/" + entry.DangerousGetHandle().ToInt64(), NonBlock | CloseExec)), FileAccess.Read);
+    }
+    internal void RequireEntry(string name, FileStream file)
+    {
+        using var reopened = Existing(name);
+        if (reopened == null || !Same(reopened.SafeFileHandle, file.SafeFileHandle))
+            throw new InputError("目标文件在核对期间被替换。");
+    }
+    internal void SetStamp(FileStream file, byte[] stamp)
+    {
+        if (fsetxattr(file.SafeFileHandle, StampName, stamp, (nuint)stamp.Length, 1) != 0)
+            throw new InputError("目标文件系统无法保存导出回执。请使用支持扩展属性的授权目录，或逐卷导出。");
+    }
+    internal bool HasStamp(FileStream file, byte[] expected)
+    {
+        var stamp = new byte[expected.Length];
+        return fgetxattr(file.SafeFileHandle, StampName, stamp, (nuint)stamp.Length) == stamp.Length &&
+            CryptographicOperations.FixedTimeEquals(stamp, expected);
     }
     public void RequireSame(string path)
     {

@@ -44,6 +44,7 @@ const editor=ref<HTMLTextAreaElement>(), showSettings=ref(false), working=ref(fa
 const fingerprint=()=>JSON.stringify(form.value)
 const textBytes=computed(()=>new Blob([form.value.text]).size)
 const longWorks=ref<InstanceType<typeof LongWorks>>()
+const longWorkRequired=ref(false)
 function useLongText(){document.getElementById('long-works')?.scrollIntoView();return longWorks.value?.paste()}
 function pasteScript(event: ClipboardEvent){
  const input=event.clipboardData?.getData('text/plain')
@@ -67,7 +68,10 @@ const assetLabel=(a:Asset)=>a.synthesisMode&&a.synthesisMode!=='preset'?modeLabe
 const lifetime=new AbortController()
 async function api(path:string,method='GET',data?:unknown,signal=lifetime.signal){
  const response=await fetch(base+path,{method,signal,credentials:'same-origin',headers:{...(method!=='GET'?{'X-Studio-CSRF':csrf.value}:{}),...(data!==undefined?{'Content-Type':'application/json'}:{})},body:data!==undefined?JSON.stringify(data):undefined})
- if(!response.ok){let message='请求失败（'+response.status+'）';try{message=(await response.json()).error||message}catch{}throw new Error(message)}
+ if(!response.ok){
+  const problem=await response.json().catch(()=>null)
+  throw Object.assign(new Error(problem?.error||'请求失败（'+response.status+'）'),{code:problem?.code})
+ }
  return response.status===204?null:response.json()
 }
 async function guarded(action:()=>Promise<void>){error.value='';notice.value='';try{await action()}catch(e){error.value=e instanceof Error?e.message:'操作失败'}}
@@ -78,8 +82,11 @@ async function convertSample(){if(!result.value||converting.value)return;convert
 async function configure(clear=false){if(working.value)return; working.value=true;await guarded(async()=>{const secret=key.value;key.value='';await api('/key',clear?'DELETE':'PUT',clear?undefined:{key:secret});configured.value=!clear;notice.value=clear?'API Key 已清除。':'API Key 已更新，浏览器不保留该值。';showSettings.value=false});working.value=false}
 async function plan(){await guarded(async()=>{const sent=fingerprint(); const value=await api('/preview','POST',JSON.parse(sent));if(sent===fingerprint()){preview.value=value;previewSnapshot.value=sent}})}
 async function generate(){
- if(busy.value)return;pending.value=true
- await guarded(async()=>{const sent=fingerprint();const input=JSON.parse(sent);const next:Job=await api('/jobs','POST',input);results[input.synthesisMode as SynthesisMode]={id:'',snapshot:sent};job.value=next;sessionStorage.setItem('mimo-job',next.id)})
+ if(busy.value)return;pending.value=true;longWorkRequired.value=false
+ await guarded(async()=>{const sent=fingerprint();const input=JSON.parse(sent);const next:Job=await api('/jobs','POST',input).catch(e=>{
+  longWorkRequired.value=sent===fingerprint()&&e?.code==='long_work_required'
+  throw e
+ });results[input.synthesisMode as SynthesisMode]={id:'',snapshot:sent};job.value=next;sessionStorage.setItem('mimo-job',next.id)})
  pending.value=false
 }
 async function cancel(){await guarded(async()=>{if(job.value)job.value=await api('/jobs/'+job.value.id+'/cancel','POST')})}
@@ -103,7 +110,7 @@ async function insert(tag:string){
  form.value.text=form.value.text.slice(0,start)+token+form.value.text.slice(start)
  await nextTick();el.focus();el.setSelectionRange(start+token.length,end+token.length)
 }
-watch(form,()=>{notice.value=''}, {deep:true})
+watch(form,()=>{notice.value='';longWorkRequired.value=false}, {deep:true})
 onMounted(async()=>{await guarded(async()=>{
  const session=await api('/session');csrf.value=session.csrf;configured.value=session.configured;voices.value=session.voices
  await Promise.all([refreshAssets(),refreshSamples()]);const jobs:Job[]=await api('/jobs');const remembered=sessionStorage.getItem('mimo-job')
@@ -145,7 +152,7 @@ onUnmounted(()=>{disposed=true;lifetime.abort();stopPolling()})
     <div v-if="form.mode!=='natural'" class="director"><label>角色<textarea v-model="form.character" rows="2" placeholder="人物身份、性格与说话习惯"></textarea></label><label>场景<textarea v-model="form.scene" rows="2" placeholder="此刻发生了什么，在对谁说话"></textarea></label><label>指导<textarea v-model="form.direction" rows="2" placeholder="语速、气息、停顿、重音和情绪"></textarea></label></div>
     <div v-if="selectedMode!=='design'" class="options"><label v-if="selectedMode==='preset'" class="check"><input type="checkbox" v-model="form.singing">唱歌模式 <small>每段添加 (唱歌)</small></label><label class="check"><input type="checkbox" v-model="form.split">自动分段</label><label class="target">目标文本元素数 <input type="number" v-model.number="form.segmentCharacters" min="50" max="3000" :disabled="!form.split"></label></div>
     <p class="hint">{{selectedMode==='design'?'VoiceDesign 只生成一段试音，最多 3000 UTF-8 字节。长文本请先保存声音样本，再用 VoiceClone；不会拆成多个随机设计。':'每段含前缀最多 3000 UTF-8 字节；按自然句边界切分。唱歌仅适用于预置模式，歌词建议保持完整。'}}</p>
-    <div v-if="textBytes>60000&&selectedMode!=='design'" class="actions"><button class="primary" @click="useLongText()">建立长篇作品并预览</button></div>
+    <div v-if="(textBytes>60000||longWorkRequired)&&selectedMode!=='design'" class="actions"><button class="primary" @click="useLongText()">建立长篇作品并预览</button></div>
     <div v-else class="actions"><button class="quiet" @click="plan">预览最终请求</button><button class="primary" :disabled="busy||!configured||!form.text.trim()||(selectedMode==='design'&&!form.voiceDescription.trim())||(selectedMode==='clone'&&!selectedSample)" @click="generate">{{busy?'生成进行中…':'✦ 生成语音'}}</button></div>
     <p class="privacy">仅点击「生成语音」发送本次正文与风格{{selectedMode==='clone'?'及选中的完整参考音频到小米云端':''}}；分段逐次请求，不自动重试。仅保存、上传或试听样本不发送给 MiMo。</p>
     <details v-if="preview" open class="preview"><summary>实际提交预览 · {{preview.segments.length}} 段 <em v-if="!previewCurrent">（输入已更改，请重新预览）</em></summary><p class="hint">{{preview.model}} · 非流式 WAV<span v-if="preview.sourceSample"> · 参考样本：{{preview.sourceSample.name}}（{{preview.sourceSample.format}}，{{preview.sourceSample.durationSeconds.toFixed(2)}} 秒）</span></p><h3>user · 风格指令 / 音色描述</h3><pre>{{preview.user||'（省略 user 消息）'}}</pre><div v-for="(text,i) in preview.assistant" :key="i"><h3>assistant · 第 {{i+1}} 段</h3><pre>{{text}}</pre></div></details>

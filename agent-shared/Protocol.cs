@@ -27,7 +27,7 @@ public sealed record AgentReply(bool Success, string Code, JsonElement Data)
 {
     public static AgentReply Ok(object? data) => new(true, "ok", Wire.Element(data));
     public static AgentReply Fail(string code) => new(false, code, Wire.Element(new { }));
-    [JsonIgnore] public int ExitCode => Code switch { "ok" => 0, "invalid_input" => 2, "permission_denied" => 3, "service_unavailable" or "incompatible_service" => 4, "busy" => 5, "timeout" or "canceled" => 7, _ => 6 };
+    [JsonIgnore] public int ExitCode => Code switch { "ok" => 0, "invalid_input" or "long_work_required" => 2, "permission_denied" => 3, "service_unavailable" or "incompatible_service" => 4, "busy" => 5, "timeout" or "canceled" => 7, _ => 6 };
 }
 public sealed record ToolSpec(string Name, string Scope, string Description, JsonElement Schema, bool ReadOnly = false, bool Destructive = false, bool CliOnly = false);
 public static class Catalog
@@ -76,6 +76,9 @@ public static class Catalog
         S("upload_work_chunk","generate","Append up to 64 KiB of Base64-encoded UTF-8 bytes at the acknowledged byte offset. Replay identical chunks safely.",
             Object(new(){["id"]=Text(32),["offset"]=Position,["sha256"]=Text(64),["data"]=Text(87384)},"id","offset","sha256","data")),
         S("upload_work_file","generate","CLI-only: upload an explicitly selected private TXT file into an existing work.",Id,cli:true),
+        S("bind_work_upload","generate","Bind an upload to its full length and SHA-256 after checking the retained prefix.",
+            Object(new(){["id"]=Text(32),["bytes"]=Position,["sha256"]=Text(64),["offset"]=Position,["prefixSha256"]=Text(64)},
+                "id","bytes","sha256","offset","prefixSha256")),
         S("prepare_work","generate","Seal uploaded text and build the local index using the selected preset or clone parameters.",
             Object(new(){["id"]=Text(32),["bytes"]=Position,["sha256"]=Text(64),["parameters"]=Parameters,["preset"]=Text(64)},"id","bytes")),
         S("list_works","read","List owned works and durable progress.",Args(("offset",new{type="integer",minimum=0,maximum=int.MaxValue})),read:true),

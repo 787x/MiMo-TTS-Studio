@@ -9,7 +9,7 @@ if [ "${wizard_data_action:-keep}" = keep ]; then
     [ ! -L "$TRIM_PKGVAR/.retained-config" ] || exit 1
     mkdir -p "$TRIM_PKGVAR/.retained-config"
     chmod 700 "$TRIM_PKGVAR/.retained-config"
-    for name in mimo-key llm-private; do
+    for name in mimo-key llm-private export-key; do
         [ ! -L "$TRIM_PKGETC/$name" ] || exit 1
         if [ -f "$TRIM_PKGETC/$name" ]; then
             install -m 600 "$TRIM_PKGETC/$name" "$TRIM_PKGVAR/.retained-config/$name"
