@@ -327,6 +327,13 @@ internal static class LongWorkTests
             await DamageDuringDispatch(storage, lifetime, options, check, reject, uncertain: false);
             await DamageDuringDispatch(storage, lifetime, options, check, reject, uncertain: true);
 
+            await ResumeHandoff(storage, options, Works.ResumePhase.Checking, "cancel", check, reject);
+            await ResumeHandoff(storage, options, Works.ResumePhase.Verified, "pause", check, reject);
+            await ResumeHandoff(storage, options, Works.ResumePhase.HandedOff, "cancel", check, reject);
+            await ResumeHandoff(storage, options, Works.ResumePhase.HandedOff, "pause", check, reject);
+            await ResumeHandoff(storage, options, Works.ResumePhase.Verified, "shutdown", check, reject);
+            await ResumeHandoff(storage, options, Works.ResumePhase.HandedOff, "shutdown", check, reject);
+
             var beforeSend = works.Create(Owner, new("Local stop"));
             await UploadAndPrepare(works, beforeSend, Encoding.UTF8.GetBytes("为恢复保留。"), options);
             await State(works, beforeSend.Id, "ready");
@@ -497,6 +504,141 @@ internal static class LongWorkTests
         check(recovered.State == "damaged" && recovered.Completed == settled.Completed && cloud.Calls == 5,
             uncertain ? "restarting a damaged uncertain work makes no paid request" :
             "restart reconciles a staged valid response for a damaged work without restarting generation");
+    }
+
+    private static async Task ResumeHandoff(Storage storage, ScriptRequest options, Works.ResumePhase phase, string action,
+        Action<bool, string> check, Action<Action, string> reject)
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var ct = budget.Token;
+        static TaskCompletionSource Barrier() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstSent = Barrier();
+        var firstReply = Barrier();
+        var reached = Barrier();
+        var verified = Barrier();
+        var leaveCheckpoint = Barrier();
+        var leftCheckpoint = Barrier();
+        var resumedSend = Barrier();
+        var transportCanceled = Barrier();
+        var finishTransport = Barrier();
+        var cloud = new WorkCloud
+        {
+            BeforeResponse = async (call, transportToken) =>
+            {
+                if (call == 1)
+                {
+                    firstSent.SetResult();
+                    await firstReply.Task.WaitAsync(transportToken);
+                }
+                else if (call == 2)
+                {
+                    using var registration = transportToken.Register(() => transportCanceled.TrySetResult());
+                    resumedSend.SetResult();
+                    // Hold the handler after cancellation to check that the
+                    // work does not report "canceled" before it has settled.
+                    await finishTransport.Task.WaitAsync(ct);
+                    transportToken.ThrowIfCancellationRequested();
+                }
+            }
+        };
+        var lifetime = new WorkLifetime();
+        var mimo = new Mimo(new HttpClient(cloud));
+        var jobs = new Jobs(storage, mimo, lifetime);
+        var works = new Works(storage, mimo, jobs, lifetime)
+        {
+            ResumeCheckpoint = (_, current) =>
+            {
+                if (current == Works.ResumePhase.Verified) verified.TrySetResult();
+                if (current != phase) return;
+                reached.SetResult();
+                leaveCheckpoint.Task.WaitAsync(ct).GetAwaiter().GetResult();
+                leftCheckpoint.SetResult();
+            }
+        };
+        var work = works.Create(Owner, new($"Resume handoff {phase} {action}"));
+        string id = work.Id;
+        await UploadAndPrepare(works, work, Encoding.UTF8.GetBytes(new string('字', 150)), options);
+        await State(works, id, "ready");
+        await Control(works, id, "start");
+        await firstSent.Task.WaitAsync(ct);
+        works.Control(id, Owner, new("pause"));
+        firstReply.SetResult();
+        var original = await State(works, id, "paused");
+        await Control(works, id, "resume");
+        await reached.Task.WaitAsync(ct);
+
+        bool dispatched = phase == Works.ResumePhase.HandedOff;
+        bool shutdown = action == "shutdown";
+        if (dispatched) await resumedSend.Task.WaitAsync(ct);
+        if (shutdown) lifetime.StopApplication();
+        else
+        {
+            string expected = action == "cancel" ? "canceling" : "pausing";
+            var stopping = works.Control(id, Owner, new(action));
+            check(stopping.State == expected && works.Get(id, Owner).State == expected,
+                $"{phase}: {action} stays transitional until the active stage exits");
+        }
+
+        if (dispatched)
+        {
+            if (action == "pause")
+                check(!transportCanceled.Task.IsCompleted, "handoff pause allows the in-flight response to finish");
+            else
+                await transportCanceled.Task.WaitAsync(ct);
+            finishTransport.SetResult();
+            // The historical check's call stack is still at the barrier, but
+            // it no longer owns the work or blocks waiting for the worker.
+            await works.StopAsync(ct);
+            leaveCheckpoint.SetResult();
+        }
+        else
+        {
+            check(cloud.Calls == 1 && !transportCanceled.Task.IsCompleted, $"{phase}: no MiMo dispatch before handoff");
+            var stopped = works.StopAsync(ct);
+            check(!stopped.IsCompleted, $"{phase}: shutdown wait still tracks the verification task");
+            leaveCheckpoint.SetResult();
+            await stopped;
+        }
+        await leftCheckpoint.Task.WaitAsync(ct);
+        if (phase == Works.ResumePhase.Checking)
+            check(!verified.Task.IsCompleted, "verification cancellation stops the check itself before it can finish");
+        var settled = works.Get(id, Owner);
+        long complete = original.Completed + (dispatched && action == "pause" ? 1 : 0);
+        check(settled.Completed == complete && cloud.Calls == (dispatched ? 2 : 1),
+            $"{phase}: {action} keeps committed audio, with no subsequent MiMo request");
+        check(jobs.Slot.Enter(), $"{phase}: {action} releases the generation slot");
+        jobs.Slot.Leave();
+
+        var reopenedLifetime = new WorkLifetime();
+        var reopened = new Works(storage, mimo, new Jobs(storage, mimo, reopenedLifetime), reopenedLifetime);
+        cloud.BeforeResponse = null;
+        await reopened.StartAsync(default);
+        await reopened.Recovery.WaitAsync(ct);
+        if (shutdown && dispatched)
+        {
+            var retained = reopened.Get(id, Owner);
+            check(retained.State == "uncertain" && cloud.Calls == 2,
+                "shutdown after dispatch keeps the request uncertain across restart");
+            reject(() => reopened.Control(id, Owner, new("resume")), "handoff restart cannot retry an uncertain request without confirmation");
+        }
+        else if (action == "pause" || shutdown)
+        {
+            if (!shutdown)
+            {
+                check(reopened.Get(id, Owner).State == "paused", $"{phase}: pause survives restart");
+                await Control(reopened, id, "resume");
+            }
+            var done = await State(reopened, id, "succeeded");
+            check(done.Completed == done.Total && cloud.Calls == done.Total,
+                $"{phase}: recovery reuses already committed audio");
+        }
+        else
+        {
+            var canceled = reopened.Get(id, Owner);
+            check(settled.State == "canceled" && canceled.State == "canceled" && cloud.Calls == (dispatched ? 2 : 1),
+                $"{phase}: cancel remains terminal across restart");
+        }
+        await reopened.StopAsync(ct);
     }
 
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

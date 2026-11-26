@@ -8,6 +8,8 @@ public sealed partial class Works
     private const string UncertainDamage = " 当前云端请求结果不确定，未自动重试。";
     private sealed record AudioCheck(Task Task, CancellationTokenSource Cancel);
     private readonly Dictionary<string, AudioCheck> audioChecks = [];
+    internal enum ResumePhase { Checking, Verified, HandedOff }
+    internal Action<string, ResumePhase>? ResumeCheckpoint { get; init; }
 
     private static string Number(long value) => value.ToString("D19", CultureInfo.InvariantCulture);
     private string SegmentFolder(string id, long segment) => PathFor(id, Path.Combine("audio", Number(segment / 1000), Number(segment)));
@@ -27,7 +29,8 @@ public sealed partial class Works
         lock (gate)
         {
             var state = Owned(id, owner);
-            if (recovering) throw new BusyError();
+            if (recovering && !(input.Action is "pause" or "cancel" &&
+                (workerId == id || audioChecks.ContainsKey(id)))) throw new BusyError();
             switch (input.Action)
             {
                 case "start" when state.View.State == "ready":
@@ -55,14 +58,6 @@ public sealed partial class Works
                         return Launch(state, input.Confirm);
                     }
                     catch { jobs.Slot.Leave(); throw; }
-                case "pause" or "cancel" when audioChecks.TryGetValue(id, out var check) && state.View.State == "running":
-                    string stop = input.Action == "cancel" ? "canceled" : "paused";
-                    string status = stop == "paused" && state.InFlight ? "uncertain" : stop;
-                    state = state with { Stop = stop, View = state.View with { State = status, Error =
-                        state.InFlight ? "上一段云端请求结果不确定，未自动重试。" : null } };
-                    Save(state);
-                    check.Cancel.Cancel();
-                    return state.View;
                 case "pause" when state.View.State == "running" && workerId == id:
                     state = state with { Stop = "paused", View = state.View with { State = "pausing" } };
                     Save(state);
@@ -71,6 +66,14 @@ public sealed partial class Works
                     state = state with { Stop = "canceled", View = state.View with { State = "canceling" } };
                     Save(state);
                     requestCancel?.Cancel();
+                    return state.View;
+                case "pause" or "cancel" when audioChecks.TryGetValue(id, out var check) &&
+                    (state.View.State == "running" || input.Action == "cancel" && state.View.State == "pausing"):
+                    bool cancel = input.Action == "cancel";
+                    state = state with { Stop = cancel ? "canceled" : "paused",
+                        View = state.View with { State = cancel ? "canceling" : "pausing" } };
+                    Save(state);
+                    check.Cancel.Cancel();
                     return state.View;
                 case "cancel" when state.View.State is "paused" or "failed" or "uncertain" or "ready":
                     state = state with { Stop = "canceled", View = state.View with { State = "canceled" } };
@@ -96,9 +99,13 @@ public sealed partial class Works
     private void VerifyAndLaunch(WorkState resume, bool confirm, CancellationToken ct)
     {
         string id = resume.View.Id;
+        bool handedOff = false;
         try
         {
+            ResumeCheckpoint?.Invoke(id, ResumePhase.Checking);
+            ct.ThrowIfCancellationRequested();
             VerifyCommittedAudio(resume, ct);
+            ResumeCheckpoint?.Invoke(id, ResumePhase.Verified);
             lock (gate)
             {
                 ct.ThrowIfCancellationRequested();
@@ -111,6 +118,12 @@ public sealed partial class Works
                 }
                 try { Launch(current, confirm); }
                 catch { jobs.Slot.Leave(); throw; }
+
+                // Publish the worker and retire the check under the same lock.
+                // Control and shutdown can now only observe the worker.
+                handedOff = true;
+                audioChecks.Remove(id, out var check);
+                check!.Cancel.Dispose();
             }
         }
         catch (Exception error)
@@ -125,9 +138,26 @@ public sealed partial class Works
         }
         finally
         {
-            lock (gate)
-                if (audioChecks.Remove(id, out var check)) check.Cancel.Dispose();
+            if (!handedOff)
+            {
+                lock (gate)
+                {
+                    if (audioChecks.Remove(id, out var check))
+                    {
+                        check.Cancel.Dispose();
+                        var current = Owned(id, resume.Owner);
+                        if (current.View.State is "pausing" or "canceling")
+                        {
+                            string status = current.View.State == "canceling" ? "canceled" :
+                                current.InFlight ? "uncertain" : "paused";
+                            TrySave(current with { View = current.View with { State = status,
+                                Error = current.InFlight ? "上一段云端请求结果不确定，未自动重试。" : null } });
+                        }
+                    }
+                }
+            }
         }
+        if (handedOff) ResumeCheckpoint?.Invoke(id, ResumePhase.HandedOff);
     }
 
     private static WorkState ResumeBlocked(WorkState state, string message) =>
