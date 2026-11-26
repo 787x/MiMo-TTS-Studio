@@ -23,7 +23,7 @@ public sealed class Mimo(HttpClient http)
         else throw new InputError("无效的合成模式。");
         return new { model = Composition.Model(input.SynthesisMode), stream = false, messages, audio };
     }
-    public async Task<Pcm> Generate(string key, ScriptRequest input, ScriptPlan plan, string segment, CancellationToken ct, string? sampleDataUrl = null, Action? beforeSend = null)
+    public async Task<Pcm> Generate(string key, ScriptRequest input, ScriptPlan plan, string segment, CancellationToken ct, string? sampleDataUrl = null, Func<Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>>? dispatch = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
@@ -31,8 +31,8 @@ public sealed class Mimo(HttpClient http)
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         request.Content = JsonContent.Create(Payload(input, plan, segment, sampleDataUrl));
         timeout.Token.ThrowIfCancellationRequested();
-        beforeSend?.Invoke();
-        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        Task<HttpResponseMessage> Send() => http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        using var response = await (dispatch == null ? Send() : dispatch(Send));
         if (!response.IsSuccessStatusCode) throw new UpstreamError((int)response.StatusCode, $"MiMo 请求失败（HTTP {(int)response.StatusCode}），请检查 Key、余额或稍后重试。未自动重试。");
         const int maxResponse = 90 * 1024 * 1024;
         if (response.Content.Headers.ContentLength > maxResponse) throw new InputError("MiMo 响应超出大小上限。");

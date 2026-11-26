@@ -375,7 +375,7 @@ public sealed partial class Works : IHostedService
         lock (gate)
         {
             var state = Owned(id, owner);
-            if (recovering || workerId == id || state.View.State == "planning") throw new BusyError();
+            if (recovering || workerId == id || audioChecks.ContainsKey(id) || state.View.State == "planning") throw new BusyError();
             Directory.Delete(Folder(id), true);
             volatileStates.Remove(id);
             Sync(root);

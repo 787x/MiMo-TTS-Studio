@@ -5,6 +5,10 @@ namespace Studio;
 
 public sealed partial class Works
 {
+    private const string UncertainDamage = " 当前云端请求结果不确定，未自动重试。";
+    private sealed record AudioCheck(Task Task, CancellationTokenSource Cancel);
+    private readonly Dictionary<string, AudioCheck> audioChecks = [];
+
     private static string Number(long value) => value.ToString("D19", CultureInfo.InvariantCulture);
     private string SegmentFolder(string id, long segment) => PathFor(id, Path.Combine("audio", Number(segment / 1000), Number(segment)));
     private string VolumePath(string id, long number) => PathFor(id, Path.Combine("volumes", Number(number / 1000), Number(number) + ".json"));
@@ -30,6 +34,12 @@ public sealed partial class Works
                 case "resume" when state.View.State is "paused" or "failed" or "uncertain":
                     if (state.View.State == "uncertain" && !input.Confirm)
                         throw new InputError("上一次请求可能已经计费。确认后才允许重新发送。");
+                    if (workerId == id) throw new BusyError();
+                    if (state.View.Completed > 0 || state.View.Volumes > 0)
+                    {
+                        if (storage.ReadKey() == null) throw new InputError("请先配置 MiMo API Key。");
+                        return CheckBeforeLaunch(state, input.Confirm);
+                    }
                     if (workerId != null || !jobs.Slot.Enter()) throw new BusyError();
                     try
                     {
@@ -42,14 +52,17 @@ public sealed partial class Works
                             PutBytes(PathFor(id, "sample.snapshot"), snapshot);
                             state = state with { SampleSha256 = Hash(snapshot), Summary = state.Summary! with { SourceSampleName = sample.Metadata.Name } };
                         }
-                        if (state.View.State == "uncertain" && state.InFlight)
-                        {
-                            Record(state, "retry_confirmed");
-                            state = state with { InFlight = false };
-                        }
-                        return Launch(state);
+                        return Launch(state, input.Confirm);
                     }
                     catch { jobs.Slot.Leave(); throw; }
+                case "pause" or "cancel" when audioChecks.TryGetValue(id, out var check) && state.View.State == "running":
+                    string stop = input.Action == "cancel" ? "canceled" : "paused";
+                    string status = stop == "paused" && state.InFlight ? "uncertain" : stop;
+                    state = state with { Stop = stop, View = state.View with { State = status, Error =
+                        state.InFlight ? "上一段云端请求结果不确定，未自动重试。" : null } };
+                    Save(state);
+                    check.Cancel.Cancel();
+                    return state.View;
                 case "pause" when state.View.State == "running" && workerId == id:
                     state = state with { Stop = "paused", View = state.View with { State = "pausing" } };
                     Save(state);
@@ -69,8 +82,66 @@ public sealed partial class Works
         }
     }
 
-    private WorkView Launch(WorkState state)
+    private WorkView CheckBeforeLaunch(WorkState resume, bool confirm = false)
     {
+        string id = resume.View.Id;
+        if (audioChecks.ContainsKey(id) || audioChecks.Count >= 2) throw new BusyError();
+        var state = resume with { Stop = null, View = resume.View with { State = "running", Error = "正在校验已生成的音频。" } };
+        Save(state);
+        var check = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+        audioChecks.Add(id, new(Task.Run(() => VerifyAndLaunch(resume, confirm, check.Token)), check));
+        return state.View;
+    }
+
+    private void VerifyAndLaunch(WorkState resume, bool confirm, CancellationToken ct)
+    {
+        string id = resume.View.Id;
+        try
+        {
+            VerifyCommittedAudio(resume, ct);
+            lock (gate)
+            {
+                ct.ThrowIfCancellationRequested();
+                var current = Owned(id, resume.Owner);
+                if (current.Stop != null || current.View.State != "running") return;
+                if (workerId != null || !jobs.Slot.Enter())
+                {
+                    TrySave(ResumeBlocked(current, "有其他任务正在执行，请手动恢复。"));
+                    return;
+                }
+                try { Launch(current, confirm); }
+                catch { jobs.Slot.Leave(); throw; }
+            }
+        }
+        catch (Exception error)
+        {
+            lock (gate)
+            {
+                var current = Owned(id, resume.Owner);
+                if (current.View.State == "damaged" || current.Stop != null || ct.IsCancellationRequested) return;
+                if (IsAudioDamage(error)) MarkDamage(current, AudioDamageMessage(error));
+                else TrySave(ResumeBlocked(current, "暂时无法校验或启动作品，请检查存储后重试。"));
+            }
+        }
+        finally
+        {
+            lock (gate)
+                if (audioChecks.Remove(id, out var check)) check.Cancel.Dispose();
+        }
+    }
+
+    private static WorkState ResumeBlocked(WorkState state, string message) =>
+        state with { View = state.View with { State = state.InFlight ? "uncertain" : "paused", Error = state.InFlight ?
+            message + " 上一段云端请求结果不确定。" : message } };
+
+    private WorkView Launch(WorkState state, bool confirm = false)
+    {
+        if (state.InFlight)
+        {
+            if (!confirm) throw new InputError("上一请求结果不确定。");
+            Record(state, "retry_confirmed");
+            state = state with { InFlight = false };
+        }
         state = state with { Stop = null, View = state.View with { State = "running", Error = null, Started = state.View.Started ?? DateTimeOffset.UtcNow } };
         Save(state);
         workerId = state.View.Id;
@@ -107,35 +178,34 @@ public sealed partial class Works
 
     private SegmentAudio? Receipt(string id, long n) =>
         Read<SegmentAudio>(Path.Combine(SegmentFolder(id, n), "result", "audio.json"));
-    private SegmentAudio? CommittedReceipt(string id, long n)
+    private static bool StorageEntryExists(string path)
     {
-        string folder = Path.Combine(SegmentFolder(id, n), "result");
-        try
-        {
-            // File.Exists suppresses access and I/O failures. Unreadable
-            // evidence must never be interpreted as an unsent request.
-            _ = File.GetAttributes(folder);
-        }
-        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return null; }
-        return Receipt(id, n) ?? throw new InputError("已提交的音频记录缺失，未重新发送。");
+        try { _ = File.GetAttributes(path); return true; }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return false; }
     }
+
+    private SegmentAudio? CommittedReceipt(string id, long n) =>
+        StorageEntryExists(Path.Combine(SegmentFolder(id, n), "result")) ? CommittedAudio(id, n) : null;
 
     private string AudioPath(string id, long n) => Path.Combine(SegmentFolder(id, n), "result", "audio.wav");
 
     private void RecoverStagedResult(string id, long n)
     {
         string folder = SegmentFolder(id, n), staged = Path.Combine(folder, "result.new");
-        if (!Directory.Exists(staged) || Directory.Exists(Path.Combine(folder, "result"))) return;
-        string file = Path.Combine(staged, "audio.wav");
-        var audio = Read<SegmentAudio>(Path.Combine(staged, "audio.json"));
-        if (audio != null && File.Exists(file) && Verified(file, audio)) PromoteResult(folder, staged);
-        else Directory.Delete(staged, true);
-    }
-
-    private static bool Verified(string path, SegmentAudio audio)
-    {
-        using var file = File.OpenRead(path);
-        return Verified(file, audio);
+        if (!StorageEntryExists(staged) || StorageEntryExists(Path.Combine(folder, "result"))) return;
+        try
+        {
+            var audio = ReadCommitted<SegmentAudio>(Path.Combine(staged, "audio.json"), "暂存回执不完整。");
+            using (var file = File.OpenRead(Path.Combine(staged, "audio.wav")))
+                if (!Verified(file, audio)) throw new AudioDamage("暂存音频不完整。");
+            PromoteResult(folder, staged);
+        }
+        catch (Exception error) when (IsAudioDamage(error))
+        {
+            // A torn temporary file is not a committed result. Access or
+            // generic I/O errors propagate without deleting staged evidence.
+            Directory.Delete(staged, true);
+        }
     }
 
     private static bool Verified(Stream file, SegmentAudio audio)
@@ -156,7 +226,7 @@ public sealed partial class Works
         if (first < n)
         {
             var firstSegment = ReadSegment(first, index, null);
-            if (segment.Chapter != firstSegment.Chapter || audio.Rate != Receipt(id, first)!.Rate ||
+            if (segment.Chapter != firstSegment.Chapter || audio.Rate != CommittedAudio(id, first).Rate ||
                 n - first >= 16 || VolumeBytes(id, first, n - 1) + audio.Bytes - 44 > 16L * 1024 * 1024)
                 state = CloseVolume(state, firstSegment.Chapter, n - 1);
         }
@@ -166,7 +236,7 @@ public sealed partial class Works
     private long VolumeBytes(string id, long first, long last)
     {
         long bytes = 44;
-        for (long n = first; n <= last; n++) bytes += Receipt(id, n)!.Bytes - 44;
+        for (long n = first; n <= last; n++) bytes += CommittedAudio(id, n).Bytes - 44;
         return bytes;
     }
 
@@ -177,7 +247,7 @@ public sealed partial class Works
         long first = state.NextVolumeStart;
         string path = VolumePath(id, number);
         EnsureDirectory(Path.GetDirectoryName(path)!);
-        Put(path, new WorkVolume(number, chapter, first, last, VolumeBytes(id, first, last), Receipt(id, first)!.Rate));
+        Put(path, new WorkVolume(number, chapter, first, last, VolumeBytes(id, first, last), CommittedAudio(id, first).Rate));
         return state with { NextVolumeStart = last + 1, View = state.View with { Volumes = number + 1 } };
     }
 
@@ -194,7 +264,6 @@ public sealed partial class Works
             WorkState state;
             lock (gate) state = Owned(id, owner);
             VerifySource(state, ct);
-            CheckResumeTail(state);
             string? sample = null;
             if (state.Parameters!.SynthesisMode == "clone")
             {
@@ -213,6 +282,7 @@ public sealed partial class Works
                 lock (gate)
                 {
                     state = Owned(id, owner);
+                    if (state.View.State == "damaged") return;
                     if (state.View.Completed > state.NextVolumeStart && (state.Stop != null || state.View.Completed == state.View.Total))
                         state = FinishVolume(state, index);
                     if (state.Stop != null || state.View.Completed == state.View.Total || ct.IsCancellationRequested)
@@ -226,7 +296,7 @@ public sealed partial class Works
                     RecoverStagedResult(id, state.View.Completed);
                     if (CommittedReceipt(id, state.View.Completed) is { } existing)
                     {
-                        if (!Verified(AudioPath(id, state.View.Completed), existing)) throw new InputError("已提交的分段音频损坏，未重新发送。");
+                        using var file = OpenVerifiedAudio(id, state.View.Completed, existing);
                         Save(Advance(state, existing, index));
                         continue;
                     }
@@ -235,16 +305,19 @@ public sealed partial class Works
                     key = storage.ReadKey() ?? throw new InputError("请先配置 MiMo API Key，再恢复任务。");
                     segment = ReadSegment(state.View.Completed, index, source);
                 }
-                var pcm = await mimo.Generate(key, state.Parameters!, plan, segment.Text, ct, sample, () =>
+                var pcm = await mimo.Generate(key, state.Parameters!, plan, segment.Text, ct, sample, send =>
                 {
                     lock (gate)
                     {
                         var current = Owned(id, owner);
                         ct.ThrowIfCancellationRequested();
-                        if (current.Stop != null) throw new InputError("任务已暂停。");
+                        if (current.Stop != null || current.View.State == "damaged") throw new InputError("任务已停止发送。");
                         current = current with { Attempt = current.Attempt + 1, InFlight = true };
                         Record(current, "dispatch");
                         Save(current);
+                        // Start the transport in the same critical section as
+                        // the durable dispatch marker and the damage check.
+                        return send();
                     }
                 });
                 lock (gate)
@@ -253,7 +326,8 @@ public sealed partial class Works
                     // cancel or process shutdown arrived during reception.
                     var latest = Owned(id, owner);
                     PublishSegment(id, segment.Number, pcm, latest.Attempt);
-                    Save(Advance(latest, Receipt(id, segment.Number)!, index));
+                    if (latest.View.State == "damaged") TrySave(AcknowledgeDamagedResult(latest));
+                    else Save(Advance(latest, CommittedAudio(id, segment.Number), index));
                 }
             }
         }
@@ -264,7 +338,7 @@ public sealed partial class Works
                 var state = Owned(id, owner);
                 bool resultStored = false;
                 try { resultStored = Receipt(id, state.View.Completed) != null; }
-                catch (Exception error) when (error is IOException or System.Text.Json.JsonException) { }
+                catch (Exception error) when (IsStorageReadError(error) || error is System.Text.Json.JsonException) { }
                 bool rejected = e is UpstreamError { Status: 400 or 401 or 403 or 404 or 413 or 422 or 429 };
                 bool uncertain = state.InFlight && !rejected && !resultStored;
                 string? errorText = e is InputError ? e.Message : e is OperationCanceledException ?
@@ -272,6 +346,19 @@ public sealed partial class Works
                 string status = state.Stop == "canceled" ? "canceled" : uncertain ? "uncertain" :
                     state.Stop == "paused" || resultStored || e is IOException || errorText == LowSpace ? "paused" :
                     stopping.IsCancellationRequested ? "running" : "failed";
+                if (state.View.State == "damaged" || IsAudioDamage(e))
+                {
+                    if (state.View.State != "damaged")
+                    {
+                        MarkDamage(state, errorText);
+                        state = Owned(id, owner);
+                    }
+                    // Keep the diagnostic reason even when transport or local
+                    // publication was interrupted after damage was detected.
+                    if (state.InFlight && !resultStored)
+                        RecordDamagedAttempt(state, uncertain);
+                    return;
+                }
                 if (uncertain) errorText += " 云端可能已经执行并计费，须确认后才能重试。";
                 try
                 {
@@ -279,7 +366,12 @@ public sealed partial class Works
                     using var index = new BinaryReader(File.OpenRead(PathFor(id, "segments.idx")));
                     state = FinishVolume(state, index);
                 }
-                catch (Exception error) when (error is IOException or InputError or UnauthorizedAccessException or System.Text.Json.JsonException) { }
+                catch (Exception error) when (IsAudioDamage(error))
+                {
+                    MarkDamage(state with { InFlight = uncertain, View = state.View with { State = status } }, AudioDamageMessage(error));
+                    return;
+                }
+                catch (Exception error) when (IsStorageReadError(error) || error is InputError) { }
                 TrySave(state with { InFlight = uncertain, View = state.View with { State = status, Error = errorText } });
             }
         }
@@ -293,6 +385,22 @@ public sealed partial class Works
                 jobs.Slot.Leave();
             }
         }
+    }
+
+    private static WorkState AcknowledgeDamagedResult(WorkState state) => state with
+    {
+        InFlight = false, Attempt = 0,
+        View = state.View with { Completed = state.View.Completed + 1,
+            Error = state.View.Error?.Replace(UncertainDamage, "", StringComparison.Ordinal) }
+    };
+
+    private void RecordDamagedAttempt(WorkState state, bool uncertain)
+    {
+        try { Record(state, uncertain ? "uncertain" : "rejected"); }
+        catch (Exception error) when (IsStorageReadError(error) || error is InputError) { }
+        string? message = state.View.Error;
+        if (uncertain && message?.EndsWith(UncertainDamage, StringComparison.Ordinal) != true) message += UncertainDamage;
+        TrySave(state with { InFlight = uncertain, Attempt = uncertain ? state.Attempt : 0, View = state.View with { Error = message } });
     }
 
     public Task StartAsync(CancellationToken ct)
@@ -325,48 +433,65 @@ public sealed partial class Works
                     }
                     continue;
                 }
-                if (state.View.State is not ("running" or "pausing" or "canceling")) continue;
-                try
+                if (state.View.State is not ("running" or "pausing" or "canceling") &&
+                    !(state.View.State == "damaged" && (state.InFlight || state.Attempt > 0))) continue;
+                lock (gate)
                 {
-                    CheckResumeTail(state);
-                    long completed = state.View.Completed;
-                    if (completed < state.View.Total) RecoverStagedResult(id, completed);
-                    using var index = new BinaryReader(File.OpenRead(PathFor(id, "segments.idx")));
-                    if (completed < state.View.Total && CommittedReceipt(id, completed) is { } pending)
-                    {
-                        if (!Verified(AudioPath(id, completed), pending)) throw new InputError($"第 {completed + 1} 段音频损坏。");
-                        state = Advance(state, pending, index);
-                    }
-                    if (state.View.State is "running" or "pausing" or "canceling")
-                    {
-                        string status = state.Stop == "canceled" ? "canceled" : state.InFlight ? "uncertain" :
-                            state.Stop == "paused" ? "paused" : "running";
-                        state = state with { View = state.View with { State = status, Error = state.InFlight ?
-                            "重启时请求结果未确认，云端可能已执行并计费。" : null } };
-                    }
-                    if (state.View.State != "running") state = FinishVolume(state, index);
-                    lock (gate)
-                    {
-                        if (state.View.State == "running")
-                        {
-                            if (workerId == null && jobs.Slot.Enter())
-                            {
-                                try { Launch(state); }
-                                catch { jobs.Slot.Leave(); throw; }
-                            }
-                            else TrySave(state with { View = state.View with { State = "paused", Error = "有其他任务正在执行，请手动恢复。" } });
-                        }
-                        else if (state != ReadState(id)) TrySave(state);
-                    }
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    lock (gate) TrySave(state with { View = state.View with { State = "damaged", Error = e is InputError ? e.Message : "无法验证作品文件，请检查存储。" } });
+                    if (TryReadState(id) is { } current) RecoverWork(current);
                 }
             }
         }
         catch (OperationCanceledException) { }
         finally { recovering = false; }
+    }
+
+    private void RecoverWork(WorkState state)
+    {
+        string id = state.View.Id;
+        bool damaged = state.View.State == "damaged";
+        if (damaged && !state.InFlight && state.Attempt == 0) return;
+        try
+        {
+            long completed = state.View.Completed;
+            if (completed < state.View.Total)
+            {
+                RecoverStagedResult(id, completed);
+                if (CommittedReceipt(id, completed) is { } pending)
+                {
+                    using var file = OpenVerifiedAudio(id, completed, pending);
+                    if (damaged) { TrySave(AcknowledgeDamagedResult(state)); return; }
+                    using var index = new BinaryReader(File.OpenRead(PathFor(id, "segments.idx")));
+                    state = Advance(state, pending, index);
+                }
+            }
+            if (damaged)
+            {
+                if (state.InFlight) RecordDamagedAttempt(state, uncertain: true);
+                return;
+            }
+            string status = state.Stop == "canceled" ? "canceled" : state.InFlight ? "uncertain" :
+                state.Stop == "paused" ? "paused" : "running";
+            state = state with { View = state.View with { State = status, Error = state.InFlight ?
+                "重启时请求结果未确认，云端可能已执行并计费。" : null } };
+            if (status != "running")
+            {
+                VerifyUnsealedAudio(state, stopping);
+                using var index = new BinaryReader(File.OpenRead(PathFor(id, "segments.idx")));
+                TrySave(FinishVolume(state, index));
+                return;
+            }
+            if (audioChecks.Count < 2)
+                CheckBeforeLaunch(state);
+            else
+                TrySave(ResumeBlocked(state, "另有作品正在校验，请手动恢复。"));
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (damaged && state.InFlight) RecordDamagedAttempt(state, uncertain: true);
+            else if (damaged) return;
+            else if (IsAudioDamage(error)) MarkDamage(state, AudioDamageMessage(error));
+            else TrySave(ResumeBlocked(state, "暂时无法恢复作品，请检查存储后重试。"));
+        }
     }
 
     private void VerifySource(WorkState state, CancellationToken ct)
@@ -404,6 +529,9 @@ public sealed partial class Works
     public async Task StopAsync(CancellationToken ct)
     {
         if (recovery != null) await recovery.WaitAsync(ct);
+        Task[] checks;
+        lock (gate) checks = audioChecks.Values.Select(check => check.Task).ToArray();
+        await Task.WhenAll(checks).WaitAsync(ct);
         Task?[] pending;
         lock (gate) pending = [worker, preparing];
         foreach (var task in pending)

@@ -323,6 +323,10 @@ internal static class LongWorkTests
             works.Delete(clone.Id, Owner);
             cloud.Before = null;
 
+            await DamageDuringResume(storage, lifetime, options, check, reject);
+            await DamageDuringDispatch(storage, lifetime, options, check, reject, uncertain: false);
+            await DamageDuringDispatch(storage, lifetime, options, check, reject, uncertain: true);
+
             var beforeSend = works.Create(Owner, new("Local stop"));
             await UploadAndPrepare(works, beforeSend, Encoding.UTF8.GetBytes("为恢复保留。"), options);
             await State(works, beforeSend.Id, "ready");
@@ -333,6 +337,166 @@ internal static class LongWorkTests
             works.Delete(beforeSend.Id, Owner);
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    private static string FirstCommittedWav(Storage storage, string id) =>
+        Directory.EnumerateFiles(Path.Combine(storage.WorksRoot, id, "audio"), "audio.wav", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal).First();
+
+    private static void DamagePcm(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Write);
+        stream.Position = 44;
+        stream.WriteByte(255);
+    }
+
+    private static async Task<WorkView> StartDamageFixture(Works works, ScriptRequest options)
+    {
+        var work = works.Create(Owner, new("Multi-volume damage fixture"));
+        string text = string.Join("\n", Enumerable.Range(1, 9).Select(n => $"# Chapter {n}\nText."));
+        await UploadAndPrepare(works, work, Encoding.UTF8.GetBytes(text), options);
+        await State(works, work.Id, "ready");
+        await Control(works, work.Id, "start");
+        return work;
+    }
+
+    private static async Task DamageDuringResume(Storage storage, Lifetime lifetime, ScriptRequest options,
+        Action<bool, string> check, Action<Action, string> reject)
+    {
+        var cloud = new WorkCloud();
+        var mimo = new Mimo(new HttpClient(cloud));
+        var jobs = new Jobs(storage, mimo, lifetime);
+        var works = new Works(storage, mimo, jobs, lifetime);
+        async Task<WorkView> PauseWithVolumes()
+        {
+            var dispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            int cutoff = cloud.Calls + 5;
+            cloud.BeforeResponse = async (call, ct) =>
+            {
+                if (call != cutoff) return;
+                dispatched.SetResult();
+                await reply.Task.WaitAsync(ct);
+            };
+            var work = await StartDamageFixture(works, options);
+            await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            works.Control(work.Id, Owner, new("pause"));
+            reply.SetResult();
+            return await State(works, work.Id, "paused");
+        }
+
+        var paused = await PauseWithVolumes();
+        check(paused.Volumes >= 3 && paused.Completed < paused.Total, "pause fixture retains multiple sealed volumes");
+        string path = FirstCommittedWav(storage, paused.Id);
+        int calls = cloud.Calls;
+        using (var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            reject(() => works.OpenVolume(paused.Id, Owner, 0), "volume under temporary sharing conflict cannot be read");
+            check(works.Get(paused.Id, Owner).State == "paused", "temporary volume I/O error does not mark the work damaged");
+            await Control(works, paused.Id, "resume");
+            var blocked = await State(works, paused.Id, "paused");
+            check(blocked.Error!.Contains("暂时") && cloud.Calls == calls,
+                "resume with transient I/O error pauses before dispatch and remains retryable");
+        }
+        DamagePcm(path);
+        await Control(works, paused.Id, "resume");
+        var damaged = await State(works, paused.Id, "damaged");
+        check(damaged.Completed == paused.Completed && cloud.Calls == calls && damaged.Error!.Contains("第 1 段"),
+            "manual resume checks the earliest sealed WAV and blocks billing in a paused work");
+        reject(() => works.Control(paused.Id, Owner, new("resume", true)), "explicit retry cannot bypass confirmed corruption");
+
+        var badIndex = await PauseWithVolumes();
+        string volumeDir = Path.Combine(storage.WorksRoot, badIndex.Id, "volumes");
+        string volume = Directory.EnumerateFiles(volumeDir, "*.json", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal).First();
+        File.WriteAllText(volume, "{");
+        reject(() => works.Playlist(badIndex.Id, Owner, 0), "invalid committed volume record is detected when listing");
+        check(works.Get(badIndex.Id, Owner).State == "damaged", "confirmed historical metadata damage blocks a paused work");
+        reject(() => works.Control(badIndex.Id, Owner, new("resume", true)), "corrupt volume metadata cannot be bypassed");
+
+        var interrupted = await PauseWithVolumes();
+        await works.StopAsync(default);
+        DamagePcm(FirstCommittedWav(storage, interrupted.Id));
+        string manifest = Path.Combine(storage.WorksRoot, interrupted.Id, "work.json");
+        var state = JsonNode.Parse(File.ReadAllText(manifest))!;
+        state["view"]!["state"] = "running";
+        state["stop"] = null;
+        File.WriteAllText(manifest, state.ToJsonString());
+        calls = cloud.Calls;
+        var reopened = new Works(storage, mimo, jobs, lifetime);
+        await reopened.StartAsync(default);
+        await reopened.Recovery;
+        check((await State(reopened, interrupted.Id, "damaged")).Completed == interrupted.Completed && cloud.Calls == calls,
+            "restart checks sealed audio for the interrupted work before any paid request");
+        cloud.BeforeResponse = null;
+        var healthy = await StartDamageFixture(reopened, options);
+        var done = await State(reopened, healthy.Id, "succeeded");
+        check(done.Completed == done.Total && cloud.Calls == calls + done.Total,
+            "other healthy work can still finish after corruption is isolated");
+        await reopened.StopAsync(default);
+    }
+
+    private static async Task DamageDuringDispatch(Storage storage, Lifetime lifetime, ScriptRequest options,
+        Action<bool, string> check, Action<Action, string> reject, bool uncertain)
+    {
+        var dispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cloud = new WorkCloud
+        {
+            BeforeResponse = async (call, ct) =>
+            {
+                if (call != 5) return;
+                dispatched.SetResult();
+                await reply.Task.WaitAsync(ct);
+                if (uncertain) throw new HttpRequestException("controlled failure after dispatch");
+            }
+        };
+        var mimo = new Mimo(new HttpClient(cloud));
+        var jobs = new Jobs(storage, mimo, lifetime);
+        var works = new Works(storage, mimo, jobs, lifetime);
+        var work = await StartDamageFixture(works, options);
+        await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        var active = works.Get(work.Id, Owner);
+        if (uncertain) works.Control(work.Id, Owner, new("pause"));
+        DamagePcm(FirstCommittedWav(storage, work.Id));
+        reject(() => works.OpenVolume(work.Id, Owner, 0), "history read detects SHA mismatch during dispatch");
+        var damaged = works.Get(work.Id, Owner);
+        check(damaged.State == "damaged" && damaged.Completed == active.Completed,
+            "history read immediately blocks a running or pausing work");
+        reject(() => works.Control(work.Id, Owner, new("resume", true)), "cannot resume a damaged work with request still in flight");
+        string directory = Path.Combine(storage.WorksRoot, work.Id);
+        string manifest = Path.Combine(directory, "work.json");
+        string beforeReply = File.ReadAllText(manifest);
+        reply.SetResult();
+        await works.StopAsync(default);
+        var settled = works.Get(work.Id, Owner);
+        var saved = JsonNode.Parse(File.ReadAllText(manifest))!;
+        check(settled.State == "damaged" && cloud.Calls == 5 && saved["inFlight"]!.GetValue<bool>() == uncertain &&
+            settled.Completed == active.Completed + (uncertain ? 0 : 1),
+            uncertain ? "uncertain in-flight result remains recorded without another dispatch" :
+            "valid in-flight result is committed without another dispatch");
+        using (var intact = works.OpenSegment(work.Id, Owner, settled.Completed - 1))
+            check(intact.Length > 44, "intact PCM is still readable by segment after the work is damage-blocked");
+        if (uncertain)
+        {
+            check(settled.Error!.Contains("结果不确定"), "damage reason preserves unknown cloud outcome");
+        }
+        else
+        {
+            // Recreate the crash window after publishing audio and before
+            // advancing the damage-blocked cursor.
+            string latest = Directory.EnumerateDirectories(directory, "result", SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal).Last();
+            Directory.Move(latest, latest + ".new");
+            File.WriteAllText(manifest, beforeReply);
+        }
+        var reopened = new Works(storage, mimo, jobs, lifetime);
+        await reopened.StartAsync(default);
+        await reopened.Recovery;
+        var recovered = reopened.Get(work.Id, Owner);
+        check(recovered.State == "damaged" && recovered.Completed == settled.Completed && cloud.Calls == 5,
+            uncertain ? "restarting a damaged uncertain work makes no paid request" :
+            "restart reconciles a staged valid response for a damaged work without restarting generation");
     }
 
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -380,6 +544,7 @@ internal static class LongWorkTests
         public int? ResponseBytes;
         public string? FirstClone;
         public Func<int, string>? Before;
+        public Func<int, CancellationToken, Task>? BeforeResponse;
         public bool Block;
         public TaskCompletionSource Sent = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private static string Response(int rate, string reason, int bytes = 800_000) => JsonSerializer.Serialize(new
@@ -409,6 +574,7 @@ internal static class LongWorkTests
             }
             Sent.TrySetResult();
             if (Block) await Task.Delay(Timeout.Infinite, ct);
+            if (BeforeResponse != null) await BeforeResponse(call, ct);
             return new(HttpStatusCode.OK) { Content = new StringContent(Before?.Invoke(call) == "length" ? limited : call == 33 ? otherRate : ResponseBytes is { } size ? Response(24000, "stop", size) : ok) };
         }
     }
